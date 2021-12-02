@@ -161,7 +161,7 @@ namespace ValheimVRMod.Scripts {
             aimDir = -transform.forward;
             var currDrawPercentage = pullPercentage();
             if (arrow != null) {
-                Player.m_localPlayer.UseStamina((currDrawPercentage - attackDrawPercentage) * 15);   
+                Player.m_localPlayer.UseStamina((currDrawPercentage - attackDrawPercentage) * 12);   
             }
             attackDrawPercentage = currDrawPercentage;
         }
