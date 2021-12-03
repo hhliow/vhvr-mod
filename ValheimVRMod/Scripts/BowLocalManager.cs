@@ -9,6 +9,7 @@ using Valve.VR.InteractionSystem;
 namespace ValheimVRMod.Scripts {
     public class BowLocalManager : BowManager {
         private const float attachRange = 0.2f;
+        private const float dynamicStaminaDrainFactor = 15;
         private GameObject arrow;
         private LineRenderer predictionLine;
         private float projectileVel;
@@ -167,7 +168,7 @@ namespace ValheimVRMod.Scripts {
                 // User linear approximation to estimate draw force.
                 drawForcePercentage = drawPercentage;
                 
-                Player.m_localPlayer.UseStamina(drawPercentageDelta * drawForcePercentage * 15);   
+                Player.m_localPlayer.UseStamina(drawPercentageDelta * drawForcePercentage * dynamicStaminaDrainFactor);   
             }
             attackDrawPercentage = currDrawPercentage;
         }
