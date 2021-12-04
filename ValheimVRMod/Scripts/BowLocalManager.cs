@@ -181,7 +181,7 @@ namespace ValheimVRMod.Scripts {
                 float drawPercentage = (currDrawPercentage + attackDrawPercentage) / 2;
                 float drawPercentageDelta = currDrawPercentage - attackDrawPercentage;
 
-                // User linear approximation to estimate draw force.
+                // Linearly approximate draw force using draw length.
                 float drawForcePercentage = drawPercentage;
 
                 Player.m_localPlayer.UseStamina(Math.Max(drawPercentageDelta, 0) * drawForcePercentage * drawStaminaFactor);
