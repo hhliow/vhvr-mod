@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -9,7 +10,9 @@ using Valve.VR.InteractionSystem;
 namespace ValheimVRMod.Scripts {
     public class BowLocalManager : BowManager {
         private const float attachRange = 0.2f;
-        private const float dynamicStaminaDrainFactor = 15;
+        private const float nockIncompletenessRandomizationFactor = 3;
+        private const float drawStaminaFactor = 15;
+
         private GameObject arrow;
         private LineRenderer predictionLine;
         private float projectileVel;
@@ -17,6 +20,9 @@ namespace ValheimVRMod.Scripts {
         private Outline outline;
         private ItemDrop.ItemData item;
         private Attack attack;
+        private float nockingTimeDurationSecond = 0.1f;
+        private float nockingStartTimeSecond;
+        private float nockingProgress = 0;
 
         public static BowLocalManager instance;
         public static float attackDrawPercentage;
@@ -121,7 +127,12 @@ namespace ValheimVRMod.Scripts {
             double attackStamina = attack.m_attackStamina;
             return (float) (attackStamina - attackStamina * 0.330000013113022 * Player.m_localPlayer.GetSkillFactor(item.m_shared.m_skillType));
         }
-        
+        private float getNockingDurationSecond()
+        {
+            double baseDurationSecond = 2.5;
+            return 0.1f + Math.Max((float)(baseDurationSecond - baseDurationSecond * Player.m_localPlayer.GetSkillFactor(item.m_shared.m_skillType)), 0);
+        }
+
         /**
      * calculate predictionline of how the arrow will fly
      */
@@ -155,22 +166,36 @@ namespace ValheimVRMod.Scripts {
                 releaseString(true);
                 return;
             }
-            
+
+            updateNockingProgress();
+
+            // The offset of the arrow from the nocking point due to the arrow not being fully nocked yet. Also serves as a visual hint to the player whether the arrow is fully nocked.
+            Vector3 nockingOffset = -transform.forward * Math.Max(0.5f - nockingProgress, 0f) * 0.125f + transform.up * Math.Min(1 - nockingProgress, 0.5f) * 0.125f;
+
             arrowAttach.transform.rotation = pullObj.transform.rotation;
-            arrowAttach.transform.position = pullObj.transform.position;
+            arrowAttach.transform.position = pullObj.transform.position + nockingOffset;
             spawnPoint = getArrowRestPosition();
             aimDir = -transform.forward;
             var currDrawPercentage = pullPercentage();
             if (arrow != null) {
-                drawPercentage = (currDrawPercentage + attackDrawPercentage) / 2;
-                drawPercentageDelta = currDrawPercentage - attackDrawPercentage;
-                
+                float drawPercentage = (currDrawPercentage + attackDrawPercentage) / 2;
+                float drawPercentageDelta = currDrawPercentage - attackDrawPercentage;
+
                 // User linear approximation to estimate draw force.
-                drawForcePercentage = drawPercentage;
-                
-                Player.m_localPlayer.UseStamina(drawPercentageDelta * drawForcePercentage * dynamicStaminaDrainFactor);   
+                float drawForcePercentage = drawPercentage;
+
+                Player.m_localPlayer.UseStamina(Math.Max(drawPercentageDelta, 0) * drawForcePercentage * drawStaminaFactor);
             }
             attackDrawPercentage = currDrawPercentage;
+        }
+        private void updateNockingProgress() {
+            if (nockingStartTimeSecond > Time.time) {
+                // Nock the arrow if it is not nocked yet.
+                nockingTimeDurationSecond = getNockingDurationSecond();
+                nockingStartTimeSecond = Math.Min(Time.time, nockingStartTimeSecond);
+            }
+
+            nockingProgress = Math.Min(Time.time - nockingStartTimeSecond, nockingTimeDurationSecond) / nockingTimeDurationSecond;
         }
 
         private void releaseString(bool withoutShoot = false) {
@@ -183,18 +208,32 @@ namespace ValheimVRMod.Scripts {
             attackDrawPercentage = pullPercentage();
             spawnPoint = getArrowRestPosition();
             aimDir = -transform.forward;
+            bool nockingFailed = nockingProgress < 0.5f;
 
-            if (withoutShoot || arrow == null || attackDrawPercentage <= 0.0f) {
+            if (withoutShoot || arrow == null || attackDrawPercentage <= 0.0f || nockingFailed) {
                 if (arrow) {
                     arrowAttach.transform.localRotation = Quaternion.identity;
                     arrowAttach.transform.localPosition = Vector3.zero;
-                    if (attackDrawPercentage <= 0.0f) {
+                    nockingProgress = 0;
+                    nockingStartTimeSecond = Single.PositiveInfinity;
+                    if (attackDrawPercentage <= 0.0f || nockingFailed) {
                         aborting = true;
                     }
                 }
 
                 return;
             }
+
+            // Randomize the shooting direction to penalize incomplete nocking.
+            float nockIncompletenessRandomizationDegree = (1 - nockingProgress) * nockIncompletenessRandomizationFactor;
+            Quaternion nockFailureRandomization =
+                Quaternion.Euler(
+                    UnityEngine.Random.Range(0.0f, nockIncompletenessRandomizationDegree),
+                    UnityEngine.Random.Range(0.0f, nockIncompletenessRandomizationDegree),
+                    UnityEngine.Random.Range(0.0f, nockIncompletenessRandomizationDegree));
+
+            aimDir = nockFailureRandomization * aimDir;
+
             // SHOOTING
             getMainHand().hapticAction.Execute(0, 0.2f, 100, 0.3f,
                 VHVRConfig.LeftHanded() ? SteamVR_Input_Sources.LeftHand : SteamVR_Input_Sources.RightHand);
@@ -252,7 +291,9 @@ namespace ValheimVRMod.Scripts {
             }
             arrowAttach.transform.localRotation = Quaternion.identity;
             arrowAttach.transform.localPosition = Vector3.zero;
-            
+            nockingProgress = 0;
+            nockingStartTimeSecond = Single.PositiveInfinity;
+
             var currentAttack = Player.m_localPlayer.GetCurrentWeapon().m_shared.m_attack;
             projectileVel = currentAttack.m_projectileVel + ammoItem.m_shared.m_attack.m_projectileVel;
             projectileVelMin = currentAttack.m_projectileVelMin + ammoItem.m_shared.m_attack.m_projectileVelMin;
