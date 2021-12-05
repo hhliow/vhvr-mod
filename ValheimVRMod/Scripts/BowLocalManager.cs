@@ -10,19 +10,21 @@ using Valve.VR.InteractionSystem;
 namespace ValheimVRMod.Scripts {
     public class BowLocalManager : BowManager {
         private const float attachRange = 0.2f;
-        private const float nockIncompletenessRandomizationFactor = 3;
-        private const float drawStaminaFactor = 15;
+        private const float incompleteDrawInaccuracyFactor = 3;
 
         private GameObject arrow;
         private LineRenderer predictionLine;
         private float projectileVel;
         private float projectileVelMin;
         private Outline outline;
+        private Outline arrowOutline;
         private ItemDrop.ItemData item;
         private Attack attack;
-        private float nockingTimeDurationSecond = 0.1f;
-        private float nockingStartTimeSecond;
-        private float nockingProgress = 0;
+        private float fullDrawDurationSecond;
+        private float drawStartTimeSecond;
+
+        // Vanilla-style restriction applied and current draw progress.
+        public float drawProgressThrottle = 0;
 
         public static BowLocalManager instance;
         public static float attackDrawPercentage;
@@ -56,7 +58,7 @@ namespace ValheimVRMod.Scripts {
             outline.OutlineWidth = 10;
             outline.OutlineMode = Outline.Mode.OutlineVisible;
             outline.enabled = false;
-            
+
             item = Player.m_localPlayer.GetLeftItem();
             if (item != null) {
                 attack = item.m_shared.m_attack.Clone();
@@ -117,6 +119,14 @@ namespace ValheimVRMod.Scripts {
             } else if (! outline.enabled && ! Player.m_localPlayer.HaveStamina(getStaminaUsage() + 0.1f)) {
                 outline.enabled = true;
             }
+
+            if (pulling && drawProgressThrottle < 1) {
+                // Use outline color to hint the draw progress throttle to the player.
+                arrowOutline.OutlineColor = new Vector4(1, 0, 0, 1 - drawProgressThrottle);
+                arrowOutline.enabled = true;
+            } else {
+                arrowOutline.enabled = false;
+            }
         }
         
         private float getStaminaUsage() {
@@ -127,10 +137,9 @@ namespace ValheimVRMod.Scripts {
             double attackStamina = attack.m_attackStamina;
             return (float) (attackStamina - attackStamina * 0.330000013113022 * Player.m_localPlayer.GetSkillFactor(item.m_shared.m_skillType));
         }
-        private float getNockingDurationSecond()
-        {
-            double baseDurationSecond = 2.5;
-            return 0.1f + Math.Max((float)(baseDurationSecond - baseDurationSecond * Player.m_localPlayer.GetSkillFactor(item.m_shared.m_skillType)), 0);
+
+        private float getFullDrawDurationSecond() {
+            return 0.5f + Math.Max(2.5f * (float)(1 - Player.m_localPlayer.GetSkillFactor(item.m_shared.m_skillType)), 0);
         }
 
         /**
@@ -157,6 +166,7 @@ namespace ValheimVRMod.Scripts {
             predictionLine.positionCount = 20;
             predictionLine.SetPositions(pointList.ToArray());
         }
+
         private void handlePulling() {
             if (!pulling && !checkHandNearString()) {
                 return;
@@ -167,35 +177,30 @@ namespace ValheimVRMod.Scripts {
                 return;
             }
 
-            updateNockingProgress();
-
-            // The offset of the arrow from the nocking point due to the arrow not being fully nocked yet. Also serves as a visual hint to the player whether the arrow is fully nocked.
-            Vector3 nockingOffset = -transform.forward * Math.Max(0.5f - nockingProgress, 0f) * 0.125f + transform.up * Math.Min(1 - nockingProgress, 0.5f) * 0.125f;
-
             arrowAttach.transform.rotation = pullObj.transform.rotation;
-            arrowAttach.transform.position = pullObj.transform.position + nockingOffset;
+            arrowAttach.transform.position = pullObj.transform.position;
             spawnPoint = getArrowRestPosition();
             aimDir = -transform.forward;
             var currDrawPercentage = pullPercentage();
             if (arrow != null) {
-                float drawPercentage = (currDrawPercentage + attackDrawPercentage) / 2;
-                float drawPercentageDelta = currDrawPercentage - attackDrawPercentage;
-
-                // Linearly approximate draw force using draw length.
-                float drawForcePercentage = drawPercentage;
-
-                Player.m_localPlayer.UseStamina(Math.Max(drawPercentageDelta, 0) * drawForcePercentage * drawStaminaFactor);
+                if (currDrawPercentage > attackDrawPercentage && !VHVRConfig.RestrictBowDrawSpeed()) {
+                    Player.m_localPlayer.UseStamina((currDrawPercentage - attackDrawPercentage) * 15);
+                }
             }
+            updateDrawProgressThrottle();
             attackDrawPercentage = currDrawPercentage;
         }
-        private void updateNockingProgress() {
-            if (nockingStartTimeSecond > Time.time) {
-                // Nock the arrow if it is not nocked yet.
-                nockingTimeDurationSecond = getNockingDurationSecond();
-                nockingStartTimeSecond = Math.Min(Time.time, nockingStartTimeSecond);
+
+        private void updateDrawProgressThrottle() {
+            float currentTimeSecond = Time.time;
+            if (attackDrawPercentage <= 0 || drawStartTimeSecond > Time.time) {
+                // Reset draw progress throttle.
+                fullDrawDurationSecond = getFullDrawDurationSecond();
+                drawStartTimeSecond = currentTimeSecond;
+                return;
             }
 
-            nockingProgress = Math.Min(Time.time - nockingStartTimeSecond, nockingTimeDurationSecond) / nockingTimeDurationSecond;
+            drawProgressThrottle = VHVRConfig.RestrictBowDrawSpeed() ? Math.Min(currentTimeSecond - drawStartTimeSecond, fullDrawDurationSecond) / fullDrawDurationSecond : 1;
         }
 
         private void releaseString(bool withoutShoot = false) {
@@ -208,15 +213,14 @@ namespace ValheimVRMod.Scripts {
             attackDrawPercentage = pullPercentage();
             spawnPoint = getArrowRestPosition();
             aimDir = -transform.forward;
-            bool nockingFailed = nockingProgress < 0.5f;
 
-            if (withoutShoot || arrow == null || attackDrawPercentage <= 0.0f || nockingFailed) {
+            if (withoutShoot || arrow == null || attackDrawPercentage <= 0.0f) {
                 if (arrow) {
                     arrowAttach.transform.localRotation = Quaternion.identity;
                     arrowAttach.transform.localPosition = Vector3.zero;
-                    nockingProgress = 0;
-                    nockingStartTimeSecond = Single.PositiveInfinity;
-                    if (attackDrawPercentage <= 0.0f || nockingFailed) {
+                    drawProgressThrottle = 0;
+                    drawStartTimeSecond = Single.PositiveInfinity;
+                    if (attackDrawPercentage <= 0.0f) {
                         aborting = true;
                     }
                 }
@@ -224,15 +228,13 @@ namespace ValheimVRMod.Scripts {
                 return;
             }
 
-            // Randomize the shooting direction to penalize incomplete nocking.
-            float nockIncompletenessRandomizationDegree = (1 - nockingProgress) * nockIncompletenessRandomizationFactor;
-            Quaternion nockFailureRandomization =
+            // Add noise to the shooting direction to penalize premature release.
+            float aimNoiseDegree = (1 - drawProgressThrottle) * incompleteDrawInaccuracyFactor;
+            aimDir =
                 Quaternion.Euler(
-                    UnityEngine.Random.Range(0.0f, nockIncompletenessRandomizationDegree),
-                    UnityEngine.Random.Range(0.0f, nockIncompletenessRandomizationDegree),
-                    UnityEngine.Random.Range(0.0f, nockIncompletenessRandomizationDegree));
-
-            aimDir = nockFailureRandomization * aimDir;
+                    UnityEngine.Random.Range(0.0f, aimNoiseDegree),
+                    UnityEngine.Random.Range(0.0f, aimNoiseDegree),
+                    UnityEngine.Random.Range(0.0f, aimNoiseDegree)) * aimDir;
 
             // SHOOTING
             getMainHand().hapticAction.Execute(0, 0.2f, 100, 0.3f,
@@ -241,7 +243,7 @@ namespace ValheimVRMod.Scripts {
         }
 
         private float pullPercentage() {
-            return (pullObj.transform.localPosition.z - pullStart.z) / (maxPullLength - pullStart.z);
+            return Math.Max(pullObj.transform.localPosition.z - pullStart.z, 0) / (maxPullLength - pullStart.z);
         }
 
         private bool checkHandNearString() {
@@ -278,7 +280,13 @@ namespace ValheimVRMod.Scripts {
             } catch {
                 return;
             }
-            
+
+            arrowOutline = arrow.AddComponent<Outline>();
+            arrowOutline.OutlineColor = Color.red;
+            arrowOutline.OutlineWidth = 10;
+            arrowOutline.OutlineMode = Outline.Mode.OutlineVisible;
+            arrowOutline.enabled = false;
+
             // we need to disable the Projectile Component, else the arrow will shoot out of the hands like a New Year rocket
             arrow.GetComponent<Projectile>().enabled = false;
             // also Destroy the Trail, as this produces particles when moving with arrow in hand
@@ -291,8 +299,8 @@ namespace ValheimVRMod.Scripts {
             }
             arrowAttach.transform.localRotation = Quaternion.identity;
             arrowAttach.transform.localPosition = Vector3.zero;
-            nockingProgress = 0;
-            nockingStartTimeSecond = Single.PositiveInfinity;
+            drawProgressThrottle = 0;
+            drawStartTimeSecond = Single.PositiveInfinity;
 
             var currentAttack = Player.m_localPlayer.GetCurrentWeapon().m_shared.m_attack;
             projectileVel = currentAttack.m_projectileVel + ammoItem.m_shared.m_attack.m_projectileVel;
