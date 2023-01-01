@@ -94,14 +94,14 @@ namespace ValheimVRMod.VRCore
         private static SteamVR_LaserPointer _rightPointer;
         private string _preferredHand;
 
+        private Transform normalHeadOrientation;
+        private Transform dodgingHeadOrientation;
+        private bool wasDodging = false;
+
         private float timerLeft;
         private float timerRight;
         public static Hand leftHand { get { return _leftHand;} }
         public static Hand rightHand { get { return _rightHand;} }
-
-        private Transform normalHeadOrientation;
-        private Transform dodgingHeadOrientation;
-        private bool wasDodging = false;
 
         public static bool handsActive
         {
@@ -198,6 +198,7 @@ namespace ValheimVRMod.VRCore
             attachVrPlayerToWorldObject();
             enableCameras();
             checkAndSetHandsAndPointers();
+            checkDodge();
             updateVrik();
             UpdateAmplifyOcclusionStatus();
             Pose.checkInteractions();
@@ -663,15 +664,16 @@ namespace ValheimVRMod.VRCore
                 normalHeadOrientation.parent = playerCharacter.transform;
             }
 
-            if (!playerCharacter.InDodge()) {
+            if (!playerCharacter.InDodge())
+            {
                 if (wasDodging)
                 {
                     _instance.transform.rotation = normalHeadOrientation.rotation;
-                    headPositionInitialized = false;
+                    // headPositionInitialized = false;
                     wasDodging = false;
                 }
-                dodgingHeadOrientation.SetPositionAndRotation(_instance.transform.position, _instance.transform.rotation);
             }
+
             maybeInitHeadPosition(playerCharacter);
             float firstPersonAdjust = inFirstPerson ? FIRST_PERSON_HEIGHT_OFFSET : 0.0f;
             setHeadVisibility(!inFirstPerson);
@@ -693,17 +695,6 @@ namespace ValheimVRMod.VRCore
                                 -getHeadOffset(_headZoomLevel) // Player controlled offset (zeroed on tracking reset)
                                 -Vector3.forward * NECK_OFFSET // Move slightly forward to position on neck
                                 );
-
-            if (playerCharacter.InDodge())
-            {
-                if (!wasDodging)
-                {
-                    normalHeadOrientation.SetPositionAndRotation(_instance.transform.position, _instance.transform.rotation);
-                }
-                _instance.transform.SetPositionAndRotation(dodgingHeadOrientation.position, dodgingHeadOrientation.rotation);
-                wasDodging = true;
-                headPositionInitialized = false;
-            }
         }
 
         //Moves all the effects and the meshes that compose the player, doesn't move the Rigidbody
@@ -753,6 +744,27 @@ namespace ValheimVRMod.VRCore
                     validVrikAnimatorState(player.GetComponentInChildren<Animator>());
                 QuickActions.instance.UpdateWristBar();
                 QuickSwitch.instance.UpdateWristBar();
+            }
+        }
+
+        private void checkDodge() {
+            if (!attachedToPlayer)
+            {
+                return;
+            }
+            Player playerCharacter = getPlayerCharacter();
+            if (playerCharacter.InDodge())
+            {
+                if (!wasDodging)
+                {
+                    normalHeadOrientation.SetPositionAndRotation(_instance.transform.position, _instance.transform.rotation);
+                }
+                _instance.transform.SetPositionAndRotation(dodgingHeadOrientation.position, dodgingHeadOrientation.rotation);
+                wasDodging = true;
+                // headPositionInitialized = false;
+            } else
+            {
+                dodgingHeadOrientation.SetPositionAndRotation(_instance.transform.position, _instance.transform.rotation);
             }
         }
 
@@ -808,7 +820,7 @@ namespace ValheimVRMod.VRCore
 
         private void maybeInitHeadPosition(Player playerCharacter)
         {
-            if (!headPositionInitialized && inFirstPerson && playerCharacter.InDodge())
+            if (!headPositionInitialized && inFirstPerson && !playerCharacter.InDodge())
             {
                 // First set the position without any adjustment
                 Vector3 desiredPosition = getDesiredPosition(playerCharacter);
