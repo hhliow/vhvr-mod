@@ -1,4 +1,4 @@
-﻿//
+//
 //  Outline.cs
 //  QuickOutline
 //
@@ -117,6 +117,15 @@ public class Outline : MonoBehaviour {
     outlineFillMaterial = new Material(sharedOutlineFillMaterial);
   }
 
+  private bool IsPlayerHairMaterials(List<Material> materials) {
+    foreach (Material material in materials) {
+      if (material.name.StartsWith("PlayerHair")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   void OnEnable() {
     foreach (var renderer in renderers) {
 
@@ -126,6 +135,13 @@ public class Outline : MonoBehaviour {
       
       // Append outline shaders
       var materials = renderer.sharedMaterials.ToList();
+
+      if (IsPlayerHairMaterials(materials)) {
+        // Two reasons for not adding outlines to player hairs:
+        // 1. The material array on player hairs are finicky and we might not be able find the correct outline material instances later when we attempt to remove them.
+        // 2. The hair, espcially eyebrow, is too close to the camera and their outline may become visible even with a moderate near clip distance.
+        continue;
+      }
 
       materials.Add(outlineMaskMaterial);
       materials.Add(outlineFillMaterial);
@@ -159,19 +175,41 @@ public class Outline : MonoBehaviour {
     }
   }
 
+  private static void RemoveMaterialOnce(List<Material> materials, Material material) {
+    if (!materials.Remove(material)) {
+      foreach (Material currentMaterial in materials) { 
+        if (currentMaterial.shader.name == material.shader.name) { 
+          materials.Remove(currentMaterial);
+          return;
+        }
+      }
+    }
+  }
+
+  private static void RemoveMaterial(List<Material> materials, Material material) {
+    string shaderName = material.shader.name;
+    for (int i = materials.Count - 1; i >= 0; i--) {
+      // LogUtils.LogWarning("Checking outline on material: " + i + ". " + materials[i].name);
+      // if (materials[i].name.StartsWith("Outline")) {
+      if (materials[i].shader.name == shaderName) { 
+        LogUtils.LogWarning("Outline shader name: " + shaderName + " at " + i);
+        materials.RemoveAt(i);
+      }
+     }
+  } 
+
   void OnDisable() {
     foreach (var renderer in renderers) {
 
       if (renderer.GetType() == typeof(ParticleSystemRenderer)) {
         continue;
       }
-      
+
       // Remove outline shaders
       var materials = renderer.sharedMaterials.ToList();
 
-      materials.Remove(outlineMaskMaterial);
-      materials.Remove(outlineFillMaterial);
-
+      RemoveMaterial(materials, outlineMaskMaterial);
+      RemoveMaterial(materials, outlineFillMaterial);
       renderer.materials = materials.ToArray();
     }
   }
