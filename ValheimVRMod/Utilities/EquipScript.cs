@@ -33,6 +33,9 @@ namespace ValheimVRMod.Utilities
                     ItemDrop.ItemData.ItemType.OneHandedWeapon,
                     ItemDrop.ItemData.ItemType.TwoHandedWeapon});
 
+        // Equipments whose skinned mesh renderer's unmodded bounding box is too small that we need to expand it so that they do not disappear.
+        public readonly static HashSet<string> EquipsWithBoundsToExpand = new HashSet<string>(new string[] { "FenringPants" });
+
         public static bool IsDominantHandItem(ItemDrop.ItemData item)
         {
             return DominantHandItemTypes.Contains(item.m_shared.m_itemType);
