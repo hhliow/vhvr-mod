@@ -23,25 +23,7 @@ namespace ValheimVRMod.Scripts.Block {
             instance = this;
             hand = VHVRConfig.LeftHanded() ? VRPlayer.leftHand.transform : VRPlayer.rightHand.transform;
             offhand = VHVRConfig.LeftHanded() ? VRPlayer.rightHand.transform : VRPlayer.leftHand.transform;
-
-            leftHandBlockBox = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            leftHandBlockBox.transform.parent = VRPlayer.leftHand.transform;
-            leftHandBlockBox.transform.localRotation = Quaternion.Euler(45, 0, 0);
-            leftHandBlockBox.transform.localPosition = new Vector3(0, 0.15f, -0.2f);
-            leftHandBlockBox.transform.localScale = new Vector3(0.25f, 0.25f, 0.8f);
-            leftHandBlockBox.GetComponent<MeshRenderer>().enabled = false;
-            Destroy(leftHandBlockBox.GetComponent<Collider>());
-
-            rightHandBlockBox = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            rightHandBlockBox.transform.parent = VRPlayer.rightHand.transform;
-            rightHandBlockBox.transform.localRotation = Quaternion.Euler(45, 0, 0);
-            rightHandBlockBox.transform.localPosition = new Vector3(0, 0.15f, -0.2f);
-            rightHandBlockBox.transform.localScale = new Vector3(0.25f, 0.25f, 0.8f);
-            rightHandBlockBox.GetComponent<MeshRenderer>().enabled = false;
-            Destroy(rightHandBlockBox.GetComponent<Collider>());
-
-
-
+            CreateBlockBoxes();
         }
 
         public override void setBlocking(Vector3 hitDir, Vector3 hitPoint) {
@@ -83,6 +65,25 @@ namespace ValheimVRMod.Scripts.Block {
                     blockTimer = blockTimerNonParry;
                 }
             }
+        }
+
+        private void CreateBlockBoxes()
+        {
+            leftHandBlockBox = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            leftHandBlockBox.transform.parent = VRPlayer.leftHand.transform;
+            leftHandBlockBox.transform.localRotation = Quaternion.Euler(45, 0, 0);
+            leftHandBlockBox.transform.localPosition = new Vector3(0, 0.15f, -0.2f);
+            leftHandBlockBox.transform.localScale = new Vector3(0.25f, 0.25f, 0.8f);
+            leftHandBlockBox.GetComponent<MeshRenderer>().enabled = false;
+            Destroy(leftHandBlockBox.GetComponent<Collider>());
+
+            rightHandBlockBox = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            rightHandBlockBox.transform.parent = VRPlayer.rightHand.transform;
+            rightHandBlockBox.transform.localRotation = Quaternion.Euler(45, 0, 0);
+            rightHandBlockBox.transform.localPosition = new Vector3(0, 0.15f, -0.2f);
+            rightHandBlockBox.transform.localScale = new Vector3(0.25f, 0.25f, 0.8f);
+            rightHandBlockBox.GetComponent<MeshRenderer>().enabled = false;
+            Destroy(rightHandBlockBox.GetComponent<Collider>());
         }
     }
 }

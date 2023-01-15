@@ -163,10 +163,10 @@ namespace ValheimVRMod.Patches {
             }
 
             LogUtils.LogWarning("Hit point: " + hit.m_point + " in local: " + (FistBlock.instance?.transform.InverseTransformPoint(hit.m_point)));
-            FistBlock.instance?.setBlocking(hit.m_dir, hit.m_point);
+            FistBlock.instance?.setBlocking(hit.m_point, hit.m_dir);
             FistBlock.instance?.renderHit(hit.m_point, hit.m_dir);
-            ShieldBlock.instance?.setBlocking(hit.m_dir, hit.m_point);
-            WeaponBlock.instance?.setBlocking(hit.m_dir, hit.m_point);
+            ShieldBlock.instance?.setBlocking(hit.m_point, hit.m_dir);
+            WeaponBlock.instance?.setBlocking(hit.m_point, hit.m_dir);
         }
         
         static void Postfix(Character __instance) {

@@ -5,9 +5,8 @@ using Valve.VR;
 
 namespace ValheimVRMod.Scripts.Block {
     public abstract class Block : MonoBehaviour {
-        public const float BlockBoxTolerance = 0.05f;
-
         // CONST
+        private const float BlockDistanceTolerance = 0.05f;
         private const float cooldown = 1;
         private const int maxSnapshots = 7;
         protected const float blockTimerParry = 0.1f;
@@ -34,20 +33,6 @@ namespace ValheimVRMod.Scripts.Block {
         private PhysicsEstimator physicsEstimator;
 
         private LineRenderer lineRenderer;
-
-        protected Bounds blockBounds {
-            get
-            {
-                Mesh mesh = gameObject.GetComponent<MeshFilter>()?.sharedMesh;
-                if (mesh == null)
-                {
-                    return new Bounds(Vector3.zero, Vector3.zero);
-                }
-                Bounds value = new Bounds(mesh.bounds.center, mesh.bounds.size);
-                value.Expand(BlockBoxTolerance);
-                return value;
-            }
-        }
 
         protected virtual void Awake()
         {
@@ -105,7 +90,7 @@ namespace ValheimVRMod.Scripts.Block {
                 wasGetHit = false;
             }
         }
-        public abstract void setBlocking(Vector3 hitDir, Vector3 hitPoint);
+        public abstract void setBlocking(Vector3 hitPoint, Vector3 hitDir);
         protected abstract void ParryCheck(Vector3 posStart, Vector3 posEnd, Vector3 posStart2, Vector3 posEnd2);
 
         public void resetBlocking() {
@@ -190,10 +175,16 @@ namespace ValheimVRMod.Scripts.Block {
         }
 
         protected bool hitIntersectsBlockBox(Vector3 hitPoint, Vector3 hitDir) {
-            if (gameObject.GetComponent<MeshFilter>()?.sharedMesh == null) {
-                // Cannot find mesh bounds.
+            Mesh mesh = gameObject.GetComponent<MeshFilter>()?.sharedMesh;
+            if (mesh == null)
+            {
+                // Cannot find mesh bounds, abort calculation.
                 return true;
             }
+
+            Bounds blockBounds = new Bounds(mesh.bounds.center, mesh.bounds.size);
+            blockBounds.Expand(BlockDistanceTolerance);
+
             return WeaponUtils.LineIntersectWithBounds(
                 blockBounds,
                 physicsEstimator.lastRenderedTransform.InverseTransformPoint(hitPoint),

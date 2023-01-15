@@ -47,17 +47,17 @@ namespace ValheimVRMod.Scripts.Block {
             offhand = VHVRConfig.LeftHanded() ? VRPlayer.leftHand.transform : VRPlayer.rightHand.transform;
         }
 
-        public override void setBlocking(Vector3 hitDir, Vector3 hitPoint) {
-            if (blockBounds != null) {
-                indicatorSync.transform.localPosition = blockBounds.center;
-                indicatorSync.transform.localScale = blockBounds.size;
-                indicator.SetActive(false);
-                indicator.transform.parent = StaticObjects.shieldObj().transform;
-                indicator.transform.localPosition = blockBounds.center;
-                indicator.transform.localRotation = Quaternion.identity;
-                indicator.transform.localScale = blockBounds.size;
-                indicator.transform.SetParent(null, true);
-            }
+        public override void setBlocking(Vector3 hitPoint, Vector3 hitDir) {
+            //if (blockBounds != null) {
+            //    indicatorSync.transform.localPosition = blockBounds.center;
+            //    indicatorSync.transform.localScale = blockBounds.size;
+            //    indicator.SetActive(false);
+            //    indicator.transform.parent = StaticObjects.shieldObj().transform;
+            //    indicator.transform.localPosition = blockBounds.center;
+            //    indicator.transform.localRotation = Quaternion.identity;
+            //    indicator.transform.localScale = blockBounds.size;
+            //    indicator.transform.SetParent(null, true);
+            //}
             _blocking = Vector3.Dot(hitDir, getForward()) > 0.5f && hitIntersectsBlockBox(hitPoint, hitDir);
         }
 
