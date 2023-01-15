@@ -36,7 +36,7 @@ namespace ValheimVRMod.Scripts {
         public WeaponWield weaponWield;
         public static bool wasSecondaryAttack;
 
-        public VelocityEstimator velocityEstimator;
+        public PhysicsEstimator velocityEstimator;
 
         private LineRenderer debugVelocityLine;
 
@@ -57,7 +57,7 @@ namespace ValheimVRMod.Scripts {
             weaponHandleSnapshots = new List<Vector3>();
 
 
-            velocityEstimator = gameObject.AddComponent<VelocityEstimator>();
+            velocityEstimator = gameObject.AddComponent<PhysicsEstimator>();
             velocityEstimator.refTransform = Player.m_localPlayer.transform;
             velocityEstimator.renderDebugVelocityLine = true;
         }
@@ -357,7 +357,7 @@ namespace ValheimVRMod.Scripts {
 
         private bool isStab()
         {
-            Vector3 attackVelocity = weaponWield.mainHand.gameObject.GetComponent<VelocityEstimator>().GetAverageVelocityInSnapshots();
+            Vector3 attackVelocity = weaponWield.mainHand.gameObject.GetComponent<PhysicsEstimator>().GetAverageVelocityInSnapshots();
             Vector3 weaponDirection = this.weaponDirection.normalized;
             LogUtils.LogWarning("Speed " + attackVelocity.magnitude + " Stab angle diff: " + Vector3.Angle(attackVelocity, weaponDirection));
 

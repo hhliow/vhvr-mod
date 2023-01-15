@@ -29,18 +29,13 @@ namespace ValheimVRMod.Scripts.Block {
         }
 
         public override void setBlocking(Vector3 hitDir, Vector3 hitPoint) {
-            LogUtils.LogWarning("Blocking? " + velocityEstimator.GetVelocity().magnitude);
-            bool intersecting = true;
             if (blockBounds != null)
             {
                 indicator.SetActive(false);
-                indicator.transform.parent = transformSync;
                 indicator.transform.localPosition = blockBounds.center;
                 indicator.transform.localRotation = Quaternion.identity;
                 indicator.transform.localScale = blockBounds.size;
                 indicator.transform.SetParent(null, true);
-
-                intersecting = WeaponUtils.LineIntersectWithBounds(blockBounds, transformSync.InverseTransformPoint(hitPoint), transformSync.InverseTransformDirection(hitDir));
             }
             var angle = Vector3.Dot(hitDir, WeaponWield.weaponForward);
             if (weaponWield.isLeftHandWeapon() && EquipScript.getLeft() != EquipType.Crossbow)
@@ -49,18 +44,17 @@ namespace ValheimVRMod.Scripts.Block {
                 var rightAngle = Vector3.Dot(hitDir, hand.TransformDirection(handUp));
                 var leftHandBlock = (leftAngle > -0.5f && leftAngle < 0.5f) ;
                 var rightHandBlock = (rightAngle > -0.5f && rightAngle < 0.5f);
-                _blocking = leftHandBlock && rightHandBlock && intersecting;
+                _blocking = leftHandBlock && rightHandBlock && hitIntersectsBlockBox(hitPoint, hitDir);
             }
             else
             {
                 if (VHVRConfig.BlockingType() == "GrabButton")
                 {
-                    _blocking = angle > -0.3f && angle < 0.3f && intersecting;
+                    _blocking = angle > -0.3f && angle < 0.3f;
                 }
                 else
                 {
-                    _blocking = weaponWield.allowBlocking() && angle > -0.3f && angle < 0.3f && intersecting;
-                    // LogUtils.LogDebug("intersecting: " + intersecting + " blocking: " + _blocking);
+                    _blocking = weaponWield.allowBlocking() && angle > -0.3f && angle < 0.3f && hitIntersectsBlockBox(hitPoint, hitDir);
                 }
             }
         }

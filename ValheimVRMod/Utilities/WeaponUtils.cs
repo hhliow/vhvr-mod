@@ -334,34 +334,60 @@ namespace ValheimVRMod.Utilities
             return Vector3.Lerp(tail, tip, proportionFromTail) + handPosition;
         }
 
+        // Whether the straight line (t -> p + t * v) intersects with the given bounds.
         public static bool LineIntersectWithBounds(Bounds bounds, Vector3 p, Vector3 v)
         {
-            Bounds b0 = new Bounds(Vector3.zero, bounds.size);
+            // Center the bound and the line around the original bounds center to simplify calculation.
+            Bounds centeredBounds = new Bounds(Vector3.zero, bounds.size);
             Vector3 p0 = p - bounds.center;
-            Vector3 v0 = v.normalized;
 
-            Vector3 i0 = Vector3.ProjectOnPlane(p0 + v0 * ((bounds.extents.x - p0.x) / v0.x), Vector3.right);
-            Vector3 i1 = Vector3.ProjectOnPlane(p0 + v0 * ((-bounds.extents.x - p0.x) / v0.x), Vector3.right);
-            if (b0.Contains(i0) || b0.Contains(i1))
+            // Where the line intersects with the right plane of the bounds.
+            Vector3 rightIntersection = p0 + v * ((bounds.extents.x - p0.x) / v.x);
+            if (centeredBounds.Contains(Vector3.ProjectOnPlane(rightIntersection, Vector3.right)))
             {
+                // The line intersects with the right face of the bounds.
                 return true;
             }
 
-            Vector3 j0 = Vector3.ProjectOnPlane(p0 + v0 * ((bounds.extents.y - p0.y) / v0.y), Vector3.up);
-            Vector3 j1 = Vector3.ProjectOnPlane(p0 + v0 * ((-bounds.extents.y - p0.y) / v0.y), Vector3.up);
-            if (b0.Contains(j0) || b0.Contains(j1))
+            // Where the line intersects with the left plane of the bounds.
+            Vector3 leftIntersection = p0 + v * ((-bounds.extents.x - p0.x) / v.x);
+            if (centeredBounds.Contains(Vector3.ProjectOnPlane(leftIntersection, Vector3.right)))
             {
+                // The line intersects with the left face of the bounds.
                 return true;
             }
 
-            Vector3 k0 = Vector3.ProjectOnPlane(p0 + v0 * ((bounds.extents.z - p0.z) / v0.z), Vector3.forward);
-            Vector3 k1 = Vector3.ProjectOnPlane(p0 + v0 * ((-bounds.extents.z - p0.z) / v0.z), Vector3.forward);
-            if (b0.Contains(k0) || b0.Contains(k1))
+            // Where the line intersects with the top plane of the bounds.
+            Vector3 topIntersection = p0 + v * ((bounds.extents.y - p0.y) / v.y);
+            if (centeredBounds.Contains(Vector3.ProjectOnPlane(topIntersection, Vector3.up)))
             {
+                // The line intersects with the top face of the bounds.
                 return true;
             }
 
-            LogUtils.LogWarning("Block: " + b0.extents * 10 + " " + p0 * 10 + " " + v0 * 10 + " " + i0 * 10 + " " + i1 * 10 + " " + j0 * 10 + " " + j1 * 10 + " " + k0 * 10 + " " + k1 * 10);
+            // Where the line intersects with the bottom plane of the bounds.
+            Vector3 bottomIntersection = p0 + v * ((-bounds.extents.y - p0.y) / v.y);
+            if (centeredBounds.Contains(Vector3.ProjectOnPlane(bottomIntersection, Vector3.up)))
+            {
+                // The line intersects with the bottom face of the bounds.
+                return true;
+            }
+
+            // Where the line intersects with the front plane of the bounds.
+            Vector3 frontIntersection = p0 + v * ((bounds.extents.z - p0.z) / v.z);
+            if (centeredBounds.Contains(Vector3.ProjectOnPlane(frontIntersection, Vector3.forward)))
+            {
+                // The line intersects with the front face of the bounds.
+                return true;
+            }
+
+            // Where the line intersects with the rear plane of the bounds.
+            Vector3 rearIntersection = p0 + v * ((-bounds.extents.z - p0.z) / v.z);
+            if (centeredBounds.Contains(Vector3.ProjectOnPlane(rearIntersection, Vector3.forward)))
+            {
+                // The line intersects with the rear face of the bounds.
+                return true;
+            }
 
             return false;
         }

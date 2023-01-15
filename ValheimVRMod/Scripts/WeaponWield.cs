@@ -30,7 +30,7 @@ namespace ValheimVRMod.Scripts
         private Transform rearHandConnector { get { return _isTwoHanded == isTwoHanded.LeftHandBehind ? VrikCreator.leftHandConnector : VrikCreator.rightHandConnector; } }
         public Vector3 estimatedLocalWeaponPointingDir = Vector3.forward;
 
-        public VelocityEstimator velocityEstimator;
+        public PhysicsEstimator velocityEstimator;
 
         ParticleSystem particleSystem;
         Transform particleSystemTransformUpdater;
@@ -45,12 +45,12 @@ namespace ValheimVRMod.Scripts
         void Awake()
         {
             // velocityEstimator = gameObject.GetComponentInChildren<MeshFilter>().gameObject.AddComponent<VelocityEstimator>();
-            velocityEstimator = gameObject.AddComponent<VelocityEstimator>();
+            velocityEstimator = gameObject.AddComponent<PhysicsEstimator>();
             velocityEstimator.refTransform = Player.m_localPlayer.transform;
             velocityEstimator.renderDebugVelocityLine = true;
 
-            VRPlayer.leftHand.gameObject.AddComponent<VelocityEstimator>().refTransform = Player.m_localPlayer.transform;
-            VRPlayer.rightHand.gameObject.AddComponent<VelocityEstimator>().refTransform = Player.m_localPlayer.transform;
+            VRPlayer.leftHand.gameObject.AddComponent<PhysicsEstimator>().refTransform = Player.m_localPlayer.transform;
+            VRPlayer.rightHand.gameObject.AddComponent<PhysicsEstimator>().refTransform = Player.m_localPlayer.transform;
         }
 
         public WeaponWield Initialize(bool holdInNonDominantHand)

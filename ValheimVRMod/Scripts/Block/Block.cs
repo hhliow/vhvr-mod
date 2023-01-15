@@ -20,7 +20,6 @@ namespace ValheimVRMod.Scripts.Block {
         protected bool _blocking;
         protected List<Vector3> snapshots = new List<Vector3>();
         protected List<Vector3> snapshotsLeft = new List<Vector3>();
-        protected Transform transformSync;
         protected Transform hand;
         protected Transform offhand;
         protected MeshCooldown _meshCooldown;
@@ -32,7 +31,7 @@ namespace ValheimVRMod.Scripts.Block {
         public bool wasResetTimer = false;
         public bool wasGetHit = false;
 
-        public VelocityEstimator velocityEstimator;
+        private PhysicsEstimator physicsEstimator;
 
         private LineRenderer lineRenderer;
 
@@ -52,25 +51,10 @@ namespace ValheimVRMod.Scripts.Block {
 
         protected virtual void Awake()
         {
-            transformSync = new GameObject().transform;
-            velocityEstimator = gameObject.AddComponent<VelocityEstimator>();
-            velocityEstimator.refTransform = Player.m_localPlayer.transform;
-            velocityEstimator.renderDebugVelocityLine = false;
+            physicsEstimator = gameObject.AddComponent<PhysicsEstimator>();
+            physicsEstimator.refTransform = Player.m_localPlayer.transform;
         }
             
-        protected virtual void OnRenderObject()
-        {
-            transformSync.position = transform.position;
-            transformSync.rotation = transform.rotation;
-            transformSync.localScale = transform.localScale * transform.TransformVector(Vector3.right).magnitude / transform.localScale.x;
-        }
-
-        void OnDestroy()
-        {
-            Destroy(transformSync.gameObject);
-        }
-
-
         //Currently there's 2 Blocking type 
         //"MotionControl" and "GrabButton"
         private void FixedUpdate() {
@@ -203,6 +187,17 @@ namespace ValheimVRMod.Scripts.Block {
         public void resetTimer()
         {
             wasResetTimer = false;
+        }
+
+        protected bool hitIntersectsBlockBox(Vector3 hitPoint, Vector3 hitDir) {
+            if (gameObject.GetComponent<MeshFilter>()?.sharedMesh == null) {
+                // Cannot find mesh bounds.
+                return true;
+            }
+            return WeaponUtils.LineIntersectWithBounds(
+                blockBounds,
+                physicsEstimator.lastRenderedTransform.InverseTransformPoint(hitPoint),
+                physicsEstimator.lastRenderedTransform.InverseTransformDirection(hitDir));
         }
     }
 }

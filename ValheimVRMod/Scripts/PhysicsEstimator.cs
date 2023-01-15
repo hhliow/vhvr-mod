@@ -9,16 +9,17 @@ using Valve.VR;
 
 namespace ValheimVRMod.Scripts
 {
-    public class VelocityEstimator : MonoBehaviour
+    // Utility component for estimating the physics of the game object such as its velocity.
+    public class PhysicsEstimator : MonoBehaviour
     {
         private const int MAX_SNAPSHOTS = 8;
 
         private List<Vector3> snapshots = new List<Vector3>();
         private List<Quaternion> rotationSnapshots = new List<Quaternion>();
         private List<Vector3> velocitySnapshots = new List<Vector3>();
-        private Transform transformSync;
         private LineRenderer debugVelocityLine;
 
+        // The transform used as the frames of reference for velocity calculation.
         private Transform _refTransform;
         public Transform refTransform {
             get
@@ -27,37 +28,42 @@ namespace ValheimVRMod.Scripts
             }
             set
             {
-                EnsureTransformSync();
                 if (_refTransform == value)
                 {
                     return;
+                }
+                if (lastRenderedTransform != null)
+                {
+                    lastRenderedTransform.SetParent(refTransform, true);
                 }
                 snapshots.Clear();
                 rotationSnapshots.Clear();
                 velocitySnapshots.Clear();
                 _refTransform = value;
-                transformSync.SetParent( _refTransform, true);
             }
         }
-
+        public Transform lastRenderedTransform { get; private set; }
         public bool renderDebugVelocityLine = false;
 
         private void Awake()
         {
-            EnsureTransformSync();
-            transformSync.SetParent(refTransform, true);
-            transformSync.SetPositionAndRotation(transform.position, transform.rotation);
-            // CreateDebugVelocityLine();
+            lastRenderedTransform = new GameObject().transform;
+            lastRenderedTransform.parent = transform;
+            lastRenderedTransform.SetPositionAndRotation(transform.position, transform.rotation);
+            lastRenderedTransform.localScale = Vector3.one;
+            lastRenderedTransform.SetParent(refTransform, true);
+            CreateDebugVelocityLine();
         }
 
         void FixedUpdate()
         {
-            snapshots.Add(refTransform == null ? transformSync.position : transformSync.localPosition);
-            rotationSnapshots.Add(refTransform == null ? transformSync.rotation : transformSync.localRotation);
+            snapshots.Add(refTransform == null ? lastRenderedTransform.position : lastRenderedTransform.localPosition);
+            rotationSnapshots.Add(refTransform == null ? lastRenderedTransform.rotation : lastRenderedTransform.localRotation);
             if (snapshots.Count >= 2) {
                 // TODO: consider using least square fit or a smoonthening function over all snapshots, but should balance with performance too.
                 velocitySnapshots.Add((snapshots[snapshots.Count - 1] - snapshots[0]) / Time.fixedDeltaTime / (snapshots.Count - 1));
             }
+
             if (snapshots.Count > MAX_SNAPSHOTS)
             {
                 snapshots.RemoveAt(0);
@@ -74,22 +80,20 @@ namespace ValheimVRMod.Scripts
 
         void OnRenderObject()
         {
-            transformSync.SetPositionAndRotation(transform.position, transform.rotation);
-            if (debugVelocityLine != null)
-            {
-                debugVelocityLine.enabled = renderDebugVelocityLine;
-                debugVelocityLine.SetPosition(0, transformSync.position);
-                debugVelocityLine.SetPosition(1, transformSync.position + GetVelocity());
-            }
+            lastRenderedTransform.SetPositionAndRotation(transform.position, transform.rotation);
+            debugVelocityLine.enabled = renderDebugVelocityLine;
+            debugVelocityLine.SetPosition(0, lastRenderedTransform.position);
+            debugVelocityLine.SetPosition(1, lastRenderedTransform.position + GetVelocity());
         }
 
         void Destroy()
         {
-            Destroy(transformSync.gameObject);
+            Destroy(lastRenderedTransform.gameObject);
         }
 
         public Vector3 GetVelocity()
         {
+            // TODO: migrate the calculation of swinging, stabbbing, throwing, and parrying to use this class.
             if (velocitySnapshots.Count == 0)
             {
                 return Vector3.zero;
@@ -114,17 +118,9 @@ namespace ValheimVRMod.Scripts
             return refTransform == null ? vAverage : refTransform.TransformVector(vAverage);
         }
 
-        private void EnsureTransformSync()
-        {
-            if (transformSync == null)
-            {
-                transformSync = new GameObject().transform;
-            }
-        }
-
         private void CreateDebugVelocityLine()
         {
-            debugVelocityLine = gameObject.AddComponent<LineRenderer>();
+            debugVelocityLine = lastRenderedTransform.gameObject.AddComponent<LineRenderer>();
             debugVelocityLine.useWorldSpace = true;
             debugVelocityLine.widthMultiplier = 0.006f;
             debugVelocityLine.positionCount = 2;

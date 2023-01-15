@@ -27,8 +27,6 @@ namespace ValheimVRMod.Scripts.Block {
             instance = this;
             InitShield();
 
-            velocityEstimator.renderDebugVelocityLine = true;
-
             indicator = GameObject.CreatePrimitive(PrimitiveType.Cube);
             indicatorSync = new GameObject();
             indicatorSync.transform.parent = transform;
@@ -50,22 +48,18 @@ namespace ValheimVRMod.Scripts.Block {
         }
 
         public override void setBlocking(Vector3 hitDir, Vector3 hitPoint) {
-            bool intersecting = true;
             if (blockBounds != null) {
-                intersecting = WeaponUtils.LineIntersectWithBounds(blockBounds, transformSync.InverseTransformPoint(hitPoint), transformSync.InverseTransformDirection(hitDir));
                 indicatorSync.transform.localPosition = blockBounds.center;
                 indicatorSync.transform.localScale = blockBounds.size;
-                indicator.SetActive(false);
+                indicator.SetActive(true);
                 indicator.transform.parent = StaticObjects.shieldObj().transform;
                 indicator.transform.localPosition = blockBounds.center;
                 indicator.transform.localRotation = Quaternion.identity;
                 indicator.transform.localScale = blockBounds.size;
                 indicator.transform.SetParent(null, true);
             }
-            _blocking = Vector3.Dot(hitDir, getForward()) > 0.5f && intersecting;
+            _blocking = Vector3.Dot(hitDir, getForward()) > 0.5f && hitIntersectsBlockBox(hitPoint, hitDir);
         }
-
-
 
         private Vector3 getForward() {
             switch (itemName)
@@ -93,19 +87,17 @@ namespace ValheimVRMod.Scripts.Block {
             //        blockTimer = blockTimerParry;
             //    }
             //    
-            float parryingAngle = Vector3.Angle(velocityEstimator.GetVelocity(), velocityEstimator.GetVelocity() + Player.m_localPlayer.transform.InverseTransformDirection(-hand.right) / 2);
-            if (velocityEstimator.GetVelocity().magnitude > 1.5f && parryingAngle < maxParryAngle)
+            PhysicsEstimator physicsEstimator = gameObject.GetComponent<PhysicsEstimator>();
+            float parryingAngle = Vector3.Angle(physicsEstimator.GetVelocity(), physicsEstimator.GetVelocity() + Player.m_localPlayer.transform.InverseTransformDirection(-hand.right) / 2);
+            if (physicsEstimator.GetVelocity().magnitude > 1.5f && parryingAngle < maxParryAngle)
             {
-                LogUtils.LogWarning("Block angle: " + parryingAngle);
                 blockTimer = blockTimerParry;
             } else {
                 blockTimer = blockTimerNonParry;
             }
         }
 
-        protected override void OnRenderObject() {
-            base.OnRenderObject();
-
+        protected void OnRenderObject() {
             if (scaling != 1f)
             {
                 transform.localScale = scaleRef * scaling;

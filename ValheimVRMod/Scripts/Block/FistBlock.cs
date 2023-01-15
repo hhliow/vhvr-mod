@@ -70,11 +70,11 @@ namespace ValheimVRMod.Scripts.Block {
         protected override void ParryCheck(Vector3 posStart, Vector3 posEnd, Vector3 posStart2, Vector3 posEnd2) {
             if (FistCollision.instance.usingFistWeapon())
             {
-                if (VRPlayer.leftHand.gameObject.GetComponent<VelocityEstimator>().GetVelocity().magnitude > 1f)
+                if (VRPlayer.leftHand.gameObject.GetComponent<PhysicsEstimator>().GetVelocity().magnitude > 1f)
                 {
                     blockTimer = blockTimerParry;
                 }
-                else if (VRPlayer.rightHand.gameObject.GetComponent<VelocityEstimator>().GetVelocity().magnitude > 1f)
+                else if (VRPlayer.rightHand.gameObject.GetComponent<PhysicsEstimator>().GetVelocity().magnitude > 1f)
                 {
                     blockTimer = blockTimerParry;
                 }
