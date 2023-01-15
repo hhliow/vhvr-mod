@@ -51,7 +51,7 @@ namespace ValheimVRMod.Scripts.Block {
             if (blockBounds != null) {
                 indicatorSync.transform.localPosition = blockBounds.center;
                 indicatorSync.transform.localScale = blockBounds.size;
-                indicator.SetActive(true);
+                indicator.SetActive(false);
                 indicator.transform.parent = StaticObjects.shieldObj().transform;
                 indicator.transform.localPosition = blockBounds.center;
                 indicator.transform.localRotation = Quaternion.identity;

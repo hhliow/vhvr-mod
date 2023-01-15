@@ -28,13 +28,13 @@ namespace ValheimVRMod.Scripts
             }
             set
             {
+                if (lastRenderedTransform != null)
+                {
+                    lastRenderedTransform.SetParent(value, true);
+                }
                 if (_refTransform == value)
                 {
                     return;
-                }
-                if (lastRenderedTransform != null)
-                {
-                    lastRenderedTransform.SetParent(refTransform, true);
                 }
                 snapshots.Clear();
                 rotationSnapshots.Clear();
@@ -125,7 +125,6 @@ namespace ValheimVRMod.Scripts
             debugVelocityLine.widthMultiplier = 0.006f;
             debugVelocityLine.positionCount = 2;
             debugVelocityLine.material.color = new Color(0.9f, 0.33f, 0.31f);
-            debugVelocityLine.sortingOrder = LayerUtils.getWorldspaceUiLayer();
             debugVelocityLine.enabled = false;
         }
     }
