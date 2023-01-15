@@ -319,21 +319,6 @@ namespace ValheimVRMod.Utilities
             return Vector3.Project(roughDirection, longestDimension).normalized;
         }
 
-        public static Vector3 FindPointAlongWeapon(MeshFilter meshFilter, Vector3 weaponPointingDir, Vector3 handPosition, float proportionFromTail)
-        {
-            Vector3 offset1 = meshFilter.transform.TransformPoint(meshFilter.sharedMesh.bounds.center + meshFilter.sharedMesh.bounds.extents) - handPosition;
-            Vector3 offset2 = meshFilter.transform.TransformPoint(meshFilter.sharedMesh.bounds.center - meshFilter.sharedMesh.bounds.extents) - handPosition;
-            Vector3 tip = Vector3.Project(offset1, weaponPointingDir);
-            Vector3 tail = Vector3.Project(offset2, weaponPointingDir);
-            if (Vector3.Dot(tip, weaponPointingDir) < Vector3.Dot(tail, weaponPointingDir))
-            {
-                Vector3 swapper = tip;
-                tip = tail;
-                tail = swapper;
-            }
-            return Vector3.Lerp(tail, tip, proportionFromTail) + handPosition;
-        }
-
         // Whether the straight line (t -> p + t * v) intersects with the given bounds.
         public static bool LineIntersectWithBounds(Bounds bounds, Vector3 p, Vector3 v)
         {
@@ -390,6 +375,6 @@ namespace ValheimVRMod.Utilities
             }
 
             return false;
-        }
+        }        
     }
 }
