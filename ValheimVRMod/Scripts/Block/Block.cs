@@ -5,7 +5,8 @@ using Valve.VR;
 
 namespace ValheimVRMod.Scripts.Block {
     public abstract class Block : MonoBehaviour {
-        
+        public const float BlockBoxTolerance = 0.05f;
+
         // CONST
         private const float cooldown = 1;
         private const int maxSnapshots = 7;
@@ -13,12 +14,13 @@ namespace ValheimVRMod.Scripts.Block {
         protected const float minDist = 0.4f;
         public const float blockTimerTolerance = blockTimerParry + 0.2f;
         public const float blockTimerNonParry = 9999f;
-        
+
         // VARIABLE
         private int tickCounter;
         protected bool _blocking;
         protected List<Vector3> snapshots = new List<Vector3>();
         protected List<Vector3> snapshotsLeft = new List<Vector3>();
+        protected Transform transformSync;
         protected Transform hand;
         protected Transform offhand;
         protected MeshCooldown _meshCooldown;
@@ -29,6 +31,45 @@ namespace ValheimVRMod.Scripts.Block {
         protected bool wasParryStart = false;
         public bool wasResetTimer = false;
         public bool wasGetHit = false;
+
+        public VelocityEstimator velocityEstimator;
+
+        private LineRenderer lineRenderer;
+
+        protected Bounds blockBounds {
+            get
+            {
+                Mesh mesh = gameObject.GetComponent<MeshFilter>()?.sharedMesh;
+                if (mesh == null)
+                {
+                    return new Bounds(Vector3.zero, Vector3.zero);
+                }
+                Bounds value = new Bounds(mesh.bounds.center, mesh.bounds.size);
+                value.Expand(BlockBoxTolerance);
+                return value;
+            }
+        }
+
+        protected virtual void Awake()
+        {
+            transformSync = new GameObject().transform;
+            velocityEstimator = gameObject.AddComponent<VelocityEstimator>();
+            velocityEstimator.refTransform = Player.m_localPlayer.transform;
+            velocityEstimator.renderDebugVelocityLine = false;
+        }
+            
+        protected virtual void OnRenderObject()
+        {
+            transformSync.position = transform.position;
+            transformSync.rotation = transform.rotation;
+            transformSync.localScale = transform.localScale * transform.TransformVector(Vector3.right).magnitude / transform.localScale.x;
+        }
+
+        void OnDestroy()
+        {
+            Destroy(transformSync.gameObject);
+        }
+
 
         //Currently there's 2 Blocking type 
         //"MotionControl" and "GrabButton"
@@ -80,7 +121,7 @@ namespace ValheimVRMod.Scripts.Block {
                 wasGetHit = false;
             }
         }
-        public abstract void setBlocking(Vector3 hitDir);
+        public abstract void setBlocking(Vector3 hitDir, Vector3 hitPoint);
         protected abstract void ParryCheck(Vector3 posStart, Vector3 posEnd, Vector3 posStart2, Vector3 posEnd2);
 
         public void resetBlocking() {
@@ -109,7 +150,24 @@ namespace ValheimVRMod.Scripts.Block {
                 return _blocking && !_meshCooldown.inCoolDown();
             }
         }
-        
+
+        public void renderHit(Vector3 hitPoint, Vector3 hitDir)
+        {
+            if (lineRenderer == null)
+            {
+                lineRenderer = gameObject.AddComponent<LineRenderer>();
+                lineRenderer.useWorldSpace = true;
+                lineRenderer.widthMultiplier = 0.006f;
+                lineRenderer.positionCount = 2;
+                lineRenderer.material.color = new Color(0.9f, 0.33f, 0.31f);
+                lineRenderer.material.SetFloat("_Glossiness", 0);
+                lineRenderer.material.SetFloat("_Smoothness", 0);
+                lineRenderer.material.SetFloat("_Metallic", 0);
+            }
+            lineRenderer.SetPosition(0, hitPoint);
+            lineRenderer.SetPosition(1, hitPoint + hitDir.normalized);
+        }
+
         public void block() {
             if (VHVRConfig.BlockingType() == "MotionControl")
             {

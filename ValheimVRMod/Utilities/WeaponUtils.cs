@@ -318,5 +318,52 @@ namespace ValheimVRMod.Utilities
             Vector3 roughDirection = weaponMeshFilter.transform.TransformPoint(weaponLocalBounds.center) - handPosition;
             return Vector3.Project(roughDirection, longestDimension).normalized;
         }
+
+        public static Vector3 FindPointAlongWeapon(MeshFilter meshFilter, Vector3 weaponPointingDir, Vector3 handPosition, float proportionFromTail)
+        {
+            Vector3 offset1 = meshFilter.transform.TransformPoint(meshFilter.sharedMesh.bounds.center + meshFilter.sharedMesh.bounds.extents) - handPosition;
+            Vector3 offset2 = meshFilter.transform.TransformPoint(meshFilter.sharedMesh.bounds.center - meshFilter.sharedMesh.bounds.extents) - handPosition;
+            Vector3 tip = Vector3.Project(offset1, weaponPointingDir);
+            Vector3 tail = Vector3.Project(offset2, weaponPointingDir);
+            if (Vector3.Dot(tip, weaponPointingDir) < Vector3.Dot(tail, weaponPointingDir))
+            {
+                Vector3 swapper = tip;
+                tip = tail;
+                tail = swapper;
+            }
+            return Vector3.Lerp(tail, tip, proportionFromTail) + handPosition;
+        }
+
+        public static bool LineIntersectWithBounds(Bounds bounds, Vector3 p, Vector3 v)
+        {
+            Bounds b0 = new Bounds(Vector3.zero, bounds.size);
+            Vector3 p0 = p - bounds.center;
+            Vector3 v0 = v.normalized;
+
+            Vector3 i0 = Vector3.ProjectOnPlane(p0 + v0 * ((bounds.extents.x - p0.x) / v0.x), Vector3.right);
+            Vector3 i1 = Vector3.ProjectOnPlane(p0 + v0 * ((-bounds.extents.x - p0.x) / v0.x), Vector3.right);
+            if (b0.Contains(i0) || b0.Contains(i1))
+            {
+                return true;
+            }
+
+            Vector3 j0 = Vector3.ProjectOnPlane(p0 + v0 * ((bounds.extents.y - p0.y) / v0.y), Vector3.up);
+            Vector3 j1 = Vector3.ProjectOnPlane(p0 + v0 * ((-bounds.extents.y - p0.y) / v0.y), Vector3.up);
+            if (b0.Contains(j0) || b0.Contains(j1))
+            {
+                return true;
+            }
+
+            Vector3 k0 = Vector3.ProjectOnPlane(p0 + v0 * ((bounds.extents.z - p0.z) / v0.z), Vector3.forward);
+            Vector3 k1 = Vector3.ProjectOnPlane(p0 + v0 * ((-bounds.extents.z - p0.z) / v0.z), Vector3.forward);
+            if (b0.Contains(k0) || b0.Contains(k1))
+            {
+                return true;
+            }
+
+            LogUtils.LogWarning("Block: " + b0.extents * 10 + " " + p0 * 10 + " " + v0 * 10 + " " + i0 * 10 + " " + i1 * 10 + " " + j0 * 10 + " " + j1 * 10 + " " + k0 * 10 + " " + k1 * 10);
+
+            return false;
+        }
     }
 }

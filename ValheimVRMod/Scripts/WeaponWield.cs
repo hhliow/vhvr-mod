@@ -28,7 +28,9 @@ namespace ValheimVRMod.Scripts
         private float shieldSize = 1f;
         private Transform frontHandConnector { get { return _isTwoHanded == isTwoHanded.LeftHandBehind ? VrikCreator.rightHandConnector : VrikCreator.leftHandConnector; } }
         private Transform rearHandConnector { get { return _isTwoHanded == isTwoHanded.LeftHandBehind ? VrikCreator.leftHandConnector : VrikCreator.rightHandConnector; } }
-        private Vector3 estimatedLocalWeaponPointingDir = Vector3.forward;
+        public Vector3 estimatedLocalWeaponPointingDir = Vector3.forward;
+
+        public VelocityEstimator velocityEstimator;
 
         ParticleSystem particleSystem;
         Transform particleSystemTransformUpdater;
@@ -38,6 +40,17 @@ namespace ValheimVRMod.Scripts
             SingleHanded,
             RightHandBehind,
             LeftHandBehind
+        }
+
+        void Awake()
+        {
+            // velocityEstimator = gameObject.GetComponentInChildren<MeshFilter>().gameObject.AddComponent<VelocityEstimator>();
+            velocityEstimator = gameObject.AddComponent<VelocityEstimator>();
+            velocityEstimator.refTransform = Player.m_localPlayer.transform;
+            velocityEstimator.renderDebugVelocityLine = true;
+
+            VRPlayer.leftHand.gameObject.AddComponent<VelocityEstimator>().refTransform = Player.m_localPlayer.transform;
+            VRPlayer.rightHand.gameObject.AddComponent<VelocityEstimator>().refTransform = Player.m_localPlayer.transform;
         }
 
         public WeaponWield Initialize(bool holdInNonDominantHand)
@@ -94,6 +107,8 @@ namespace ValheimVRMod.Scripts
 
         protected virtual void OnRenderObject()
         {
+            velocityEstimator.refTransform = Player.m_localPlayer.transform;
+            // LogUtils.LogWarning("vel: " + velocityEstimator.transformSync.localPosition + " v " + velocityEstimator.GetVelocity() + ", " + velocityEstimator.GetVelocity().magnitude);
             WieldHandle();
             if (particleSystem != null)
             {
@@ -315,7 +330,7 @@ namespace ValheimVRMod.Scripts
             return _isTwoHanded != isTwoHanded.SingleHanded;
         }
 
-        public bool allowBlocking()
+        public virtual bool allowBlocking()
         {
             switch (attack.m_attackAnimation)
             {
@@ -325,7 +340,7 @@ namespace ValheimVRMod.Scripts
                     else
                         return weaponSubPos;
                 default:
-                    return isCurrentlyTwoHanded();
+                    return isCurrentlyTwoHanded() || SteamVR_Actions.valheim_Grab.GetState(VRPlayer.dominantHandInputSource);
             }
         }
 

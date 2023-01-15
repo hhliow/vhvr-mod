@@ -203,8 +203,11 @@ namespace ValheimVRMod.Patches {
                     hitData.m_damage.Modify(2f);
                     hitData.m_pushForce *= 1.2f;
                 }
-                
-                hitData.m_damage.Modify(AttackTargetMeshCooldown.calcDamageMultiplier());
+
+                if (___m_lowerDamagePerHit && !WeaponCollision.wasSecondaryAttack)
+                {
+                    hitData.m_damage.Modify(AttackTargetMeshCooldown.calcDamageMultiplier());
+                }
 
                 ___m_character.GetSEMan().ModifyAttack(skill, ref hitData);
                 if (component is Character)

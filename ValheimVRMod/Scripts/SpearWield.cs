@@ -24,6 +24,11 @@ namespace ValheimVRMod.Scripts
             return base.GetSingleHandedRotation(originalRotation);
         }
 
+        public override bool allowBlocking()
+        {
+            return base.allowBlocking() && !ThrowableManager.isAiming && !ThrowableManager.isThrowing;
+        }
+
         protected override bool TemporaryDisableTwoHandedWield()
         {
             return ThrowableManager.isAiming || ThrowableManager.isThrowing;

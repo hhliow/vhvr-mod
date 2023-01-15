@@ -11,17 +11,34 @@ namespace ValheimVRMod.Scripts.Block {
         private float scaling = 1f;
         private Vector3 posRef;
         private Vector3 scaleRef;
-        
+
         public static ShieldBlock instance;
+
+        private GameObject indicator;
+        private GameObject indicatorSync;
 
         private void OnDisable() {
             instance = null;
         }
         
-        private void Awake() {
+        protected override void Awake() {
+            base.Awake();
             _meshCooldown = gameObject.AddComponent<MeshCooldown>();
             instance = this;
             InitShield();
+
+            velocityEstimator.renderDebugVelocityLine = true;
+
+            indicator = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            indicatorSync = new GameObject();
+            indicatorSync.transform.parent = transform;
+            indicatorSync.transform.localPosition = Vector3.zero;
+            indicatorSync.transform.localRotation = Quaternion.identity;
+            indicator.layer = LayerUtils.getWorldspaceUiLayer();
+            indicator.SetActive(false);
+            indicator.GetComponent<MeshRenderer>().material.color = new Vector4(0.5f, 0.5f, 0, 0.5f);
+            indicator.GetComponent<MeshRenderer>().receiveShadows = false;
+            Destroy(indicator.GetComponent<Collider>());
         }
         
         private void InitShield()
@@ -32,9 +49,23 @@ namespace ValheimVRMod.Scripts.Block {
             offhand = VHVRConfig.LeftHanded() ? VRPlayer.leftHand.transform : VRPlayer.rightHand.transform;
         }
 
-        public override void setBlocking(Vector3 hitDir) {
-            _blocking = Vector3.Dot(hitDir, getForward()) > 0.5f;
+        public override void setBlocking(Vector3 hitDir, Vector3 hitPoint) {
+            bool intersecting = true;
+            if (blockBounds != null) {
+                intersecting = WeaponUtils.LineIntersectWithBounds(blockBounds, transformSync.InverseTransformPoint(hitPoint), transformSync.InverseTransformDirection(hitDir));
+                indicatorSync.transform.localPosition = blockBounds.center;
+                indicatorSync.transform.localScale = blockBounds.size;
+                indicator.SetActive(false);
+                indicator.transform.parent = StaticObjects.shieldObj().transform;
+                indicator.transform.localPosition = blockBounds.center;
+                indicator.transform.localRotation = Quaternion.identity;
+                indicator.transform.localScale = blockBounds.size;
+                indicator.transform.SetParent(null, true);
+            }
+            _blocking = Vector3.Dot(hitDir, getForward()) > 0.5f && intersecting;
         }
+
+
 
         private Vector3 getForward() {
             switch (itemName)
@@ -50,22 +81,31 @@ namespace ValheimVRMod.Scripts.Block {
             }
             return -StaticObjects.shieldObj().transform.forward;
         }
+
         protected override void ParryCheck(Vector3 posStart, Vector3 posEnd, Vector3 posStart2, Vector3 posEnd2) {
 
-            var shieldSnapshot = VHVRConfig.LeftHanded() ? snapshotsLeft : snapshots;
-            if (Vector3.Distance(posEnd, posStart) > minDist) {
-                
-                Vector3 shieldPos = shieldSnapshot[shieldSnapshot.Count - 1] + Player.m_localPlayer.transform.InverseTransformDirection(-hand.right) / 2;
-                if (Vector3.Angle(shieldPos - shieldSnapshot[0] , shieldSnapshot[shieldSnapshot.Count - 1] - shieldSnapshot[0]) < maxParryAngle) {
-                    blockTimer = blockTimerParry;
-                }
-                
+            //var shieldSnapshot = VHVRConfig.LeftHanded() ? snapshotsLeft : snapshots;
+            //if (Vector3.Distance(posEnd, posStart) > minDist) {
+            //    LogUtils.LogWarning("Block speed: " + velocityEstimator.GetVelocity().magnitude);
+            //    Vector3 shieldPos = shieldSnapshot[shieldSnapshot.Count - 1] + Player.m_localPlayer.transform.InverseTransformDirection(-hand.right) / 2;
+            //    if (Vector3.Angle(shieldPos - shieldSnapshot[0] , shieldSnapshot[shieldSnapshot.Count - 1] - shieldSnapshot[0]) < maxParryAngle) {
+            //        LogUtils.LogWarning("Block angle: " + Vector3.Angle(velocityEstimator.GetVelocity(), velocityEstimator.GetVelocity() + Player.m_localPlayer.transform.InverseTransformDirection(-hand.right) / 2));
+            //        blockTimer = blockTimerParry;
+            //    }
+            //    
+            float parryingAngle = Vector3.Angle(velocityEstimator.GetVelocity(), velocityEstimator.GetVelocity() + Player.m_localPlayer.transform.InverseTransformDirection(-hand.right) / 2);
+            if (velocityEstimator.GetVelocity().magnitude > 1.5f && parryingAngle < maxParryAngle)
+            {
+                LogUtils.LogWarning("Block angle: " + parryingAngle);
+                blockTimer = blockTimerParry;
             } else {
                 blockTimer = blockTimerNonParry;
             }
         }
 
-        private void OnRenderObject() {
+        protected override void OnRenderObject() {
+            base.OnRenderObject();
+
             if (scaling != 1f)
             {
                 transform.localScale = scaleRef * scaling;
@@ -76,9 +116,10 @@ namespace ValheimVRMod.Scripts.Block {
                 transform.localScale = scaleRef;
                 transform.localPosition = posRef;
             }
+            StaticObjects.shieldObj().transform.position = transform.position;
             StaticObjects.shieldObj().transform.rotation = transform.rotation;
-            
         }
+
         public void ScaleShieldSize(float scale)
         {
             scaling = scale;
