@@ -59,7 +59,7 @@ namespace ValheimVRMod.Scripts {
 
             velocityEstimator = gameObject.AddComponent<PhysicsEstimator>();
             velocityEstimator.refTransform = Player.m_localPlayer.transform;
-            velocityEstimator.renderDebugVelocityLine = true;
+            // velocityEstimator.renderDebugVelocityLine = true;
         }
 
         void Destroy()

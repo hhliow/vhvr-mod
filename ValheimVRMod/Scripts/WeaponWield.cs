@@ -47,7 +47,7 @@ namespace ValheimVRMod.Scripts
             // velocityEstimator = gameObject.GetComponentInChildren<MeshFilter>().gameObject.AddComponent<VelocityEstimator>();
             velocityEstimator = gameObject.AddComponent<PhysicsEstimator>();
             velocityEstimator.refTransform = Player.m_localPlayer.transform;
-            velocityEstimator.renderDebugVelocityLine = true;
+            // velocityEstimator.renderDebugVelocityLine = true;
 
             VRPlayer.leftHand.gameObject.AddComponent<PhysicsEstimator>().refTransform = Player.m_localPlayer.transform;
             VRPlayer.rightHand.gameObject.AddComponent<PhysicsEstimator>().refTransform = Player.m_localPlayer.transform;

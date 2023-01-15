@@ -1,11 +1,5 @@
 ﻿using System.Collections.Generic;
-using System.ComponentModel;
-using System.Linq;
 using UnityEngine;
-using ValheimVRMod.Scripts.Block;
-using ValheimVRMod.Utilities;
-using ValheimVRMod.VRCore;
-using Valve.VR;
 
 namespace ValheimVRMod.Scripts
 {
