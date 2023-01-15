@@ -31,11 +31,11 @@ namespace ValheimVRMod.Scripts.Block {
             if (FistCollision.instance.usingDualKnives() || FistCollision.instance.usingFistWeapon())
             {
                 LogUtils.LogWarning("Fist: " + leftHandBlockBox.GetComponent<MeshFilter>().sharedMesh.bounds);
-                if (WeaponUtils.LineIntersectWithBounds(leftHandBlockBox.GetComponent<MeshFilter>().sharedMesh.bounds, leftHandBlockBox.transform.InverseTransformPoint(hitPoint), leftHandBlockBox.transform.InverseTransformDirection(hitDir)))
+                if (WeaponUtils.LineIntersectsWithBounds(leftHandBlockBox.GetComponent<MeshFilter>().sharedMesh.bounds, leftHandBlockBox.transform.InverseTransformPoint(hitPoint), leftHandBlockBox.transform.InverseTransformDirection(hitDir)))
                 {
                     _blocking = true;
                 }
-                else if (WeaponUtils.LineIntersectWithBounds(rightHandBlockBox.GetComponent<MeshFilter>().sharedMesh.bounds, rightHandBlockBox.transform.InverseTransformPoint(hitPoint), rightHandBlockBox.transform.InverseTransformPoint(hitDir)))
+                else if (WeaponUtils.LineIntersectsWithBounds(rightHandBlockBox.GetComponent<MeshFilter>().sharedMesh.bounds, rightHandBlockBox.transform.InverseTransformPoint(hitPoint), rightHandBlockBox.transform.InverseTransformPoint(hitDir)))
                 {   
                     _blocking = true;
                 } else
