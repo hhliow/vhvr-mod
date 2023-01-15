@@ -87,7 +87,6 @@ namespace ValheimVRMod.Scripts.Block {
             //        blockTimer = blockTimerParry;
             //    }
             //    
-            PhysicsEstimator physicsEstimator = gameObject.GetComponent<PhysicsEstimator>();
             float parryingAngle = Vector3.Angle(physicsEstimator.GetVelocity(), physicsEstimator.GetVelocity() + Player.m_localPlayer.transform.InverseTransformDirection(-hand.right) / 2);
             if (physicsEstimator.GetVelocity().magnitude > 1.5f && parryingAngle < maxParryAngle)
             {
@@ -97,7 +96,8 @@ namespace ValheimVRMod.Scripts.Block {
             }
         }
 
-        protected void OnRenderObject() {
+        protected override void OnRenderObject() {
+            base.OnRenderObject();
             if (scaling != 1f)
             {
                 transform.localScale = scaleRef * scaling;

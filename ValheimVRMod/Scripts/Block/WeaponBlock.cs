@@ -29,14 +29,6 @@ namespace ValheimVRMod.Scripts.Block {
         }
 
         public override void setBlocking(Vector3 hitPoint, Vector3 hitDir) {
-            //if (blockBounds != null)
-            //{
-            //    indicator.SetActive(false);
-            //    indicator.transform.localPosition = blockBounds.center;
-            //    indicator.transform.localRotation = Quaternion.identity;
-            //    indicator.transform.localScale = blockBounds.size;
-            //    indicator.transform.SetParent(null, true);
-            //}
             var angle = Vector3.Dot(hitDir, WeaponWield.weaponForward);
             if (weaponWield.isLeftHandWeapon() && EquipScript.getLeft() != EquipType.Crossbow)
             {

@@ -14,6 +14,9 @@ namespace ValheimVRMod.Scripts.Block {
         public const float blockTimerTolerance = blockTimerParry + 0.2f;
         public const float blockTimerNonParry = 9999f;
 
+        //private GameObject indicator;
+
+
         // VARIABLE
         private int tickCounter;
         protected bool _blocking;
@@ -30,16 +33,32 @@ namespace ValheimVRMod.Scripts.Block {
         public bool wasResetTimer = false;
         public bool wasGetHit = false;
 
-        private PhysicsEstimator physicsEstimator;
+        private Transform lastRenderedTransform;
+        protected PhysicsEstimator physicsEstimator;
 
         private LineRenderer lineRenderer;
 
         protected virtual void Awake()
         {
-            physicsEstimator = gameObject.AddComponent<PhysicsEstimator>();
+            lastRenderedTransform = new GameObject().transform;
+            physicsEstimator = lastRenderedTransform.gameObject.AddComponent<PhysicsEstimator>();
             physicsEstimator.refTransform = Player.m_localPlayer.transform;
+
+            //indicator = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            //indicator.SetActive(false);
+            //indicator.GetComponent<MeshRenderer>().material.color = new Vector4(0.5f, 0.5f, 0, 0.5f);
+            //indicator.GetComponent<MeshRenderer>().receiveShadows = false;
+            //Destroy(indicator.GetComponent<Collider>());
         }
-            
+
+        protected virtual void OnRenderObject()
+        {
+            lastRenderedTransform.parent = transform;
+            lastRenderedTransform.SetPositionAndRotation(transform.position, transform.rotation);
+            lastRenderedTransform.localScale = Vector3.one;
+            lastRenderedTransform.SetParent(null, true);
+        }
+
         //Currently there's 2 Blocking type 
         //"MotionControl" and "GrabButton"
         private void FixedUpdate() {
@@ -185,10 +204,18 @@ namespace ValheimVRMod.Scripts.Block {
             Bounds blockBounds = new Bounds(mesh.bounds.center, mesh.bounds.size);
             blockBounds.Expand(BlockDistanceTolerance);
 
+            //indicator.SetActive(true);
+            //indicator.transform.parent = lastRenderedTransform;
+            //indicator.transform.localPosition = blockBounds.center;
+            //indicator.transform.localRotation = Quaternion.identity;
+            //indicator.transform.localScale = blockBounds.size;
+            //indicator.transform.SetParent(null, true);
+
+            LogUtils.LogWarning("blocking: " + Player.m_localPlayer.transform.InverseTransformPoint(lastRenderedTransform.position));
             return WeaponUtils.LineIntersectsWithBounds(
                 blockBounds,
-                physicsEstimator.lastRenderedTransform.InverseTransformPoint(hitPoint),
-                physicsEstimator.lastRenderedTransform.InverseTransformDirection(hitDir));
+                lastRenderedTransform.InverseTransformPoint(hitPoint),
+                lastRenderedTransform.InverseTransformDirection(hitDir));
         }
     }
 }

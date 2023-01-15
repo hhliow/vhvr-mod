@@ -26,11 +26,9 @@ namespace ValheimVRMod.Scripts.Block {
             CreateBlockBoxes();
         }
 
-        public override void setBlocking(Vector3 hitDir, Vector3 hitPoint) {
-            //_blocking = Vector3.Dot(hitDir, getForward()) > 0.5f;
+        public override void setBlocking(Vector3 hitPoint, Vector3 hitDir) {
             if (FistCollision.instance.usingDualKnives() || FistCollision.instance.usingFistWeapon())
             {
-                LogUtils.LogWarning("Fist: " + leftHandBlockBox.GetComponent<MeshFilter>().sharedMesh.bounds);
                 if (WeaponUtils.LineIntersectsWithBounds(leftHandBlockBox.GetComponent<MeshFilter>().sharedMesh.bounds, leftHandBlockBox.transform.InverseTransformPoint(hitPoint), leftHandBlockBox.transform.InverseTransformDirection(hitDir)))
                 {
                     _blocking = true;
@@ -74,7 +72,7 @@ namespace ValheimVRMod.Scripts.Block {
             leftHandBlockBox.transform.localRotation = Quaternion.Euler(45, 0, 0);
             leftHandBlockBox.transform.localPosition = new Vector3(0, 0.15f, -0.2f);
             leftHandBlockBox.transform.localScale = new Vector3(0.25f, 0.25f, 0.8f);
-            leftHandBlockBox.GetComponent<MeshRenderer>().enabled = false;
+            //leftHandBlockBox.GetComponent<MeshRenderer>().enabled = false;
             Destroy(leftHandBlockBox.GetComponent<Collider>());
 
             rightHandBlockBox = GameObject.CreatePrimitive(PrimitiveType.Cube);
@@ -82,7 +80,7 @@ namespace ValheimVRMod.Scripts.Block {
             rightHandBlockBox.transform.localRotation = Quaternion.Euler(45, 0, 0);
             rightHandBlockBox.transform.localPosition = new Vector3(0, 0.15f, -0.2f);
             rightHandBlockBox.transform.localScale = new Vector3(0.25f, 0.25f, 0.8f);
-            rightHandBlockBox.GetComponent<MeshRenderer>().enabled = false;
+            //rightHandBlockBox.GetComponent<MeshRenderer>().enabled = false;
             Destroy(rightHandBlockBox.GetComponent<Collider>());
         }
     }
