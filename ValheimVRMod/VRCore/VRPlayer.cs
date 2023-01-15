@@ -829,6 +829,8 @@ namespace ValheimVRMod.VRCore
             StaticObjects.addQuickMenus();
             LeftHandQuickMenu.instance.refreshItems();
             RightHandQuickMenu.instance.refreshItems();
+            leftHand.gameObject.AddComponent<PhysicsEstimator>().refTransform = getPlayerCharacter().transform;
+            rightHand.gameObject.AddComponent<PhysicsEstimator>().refTransform = getPlayerCharacter().transform;
         }
 
         private bool vrikEnabled()
