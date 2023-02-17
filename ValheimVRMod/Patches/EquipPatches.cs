@@ -66,7 +66,7 @@ namespace ValheimVRMod.Patches {
                     meshFilter.gameObject.AddComponent<FishingManager>();
                     break;
             }
-            WeaponWield weaponWield = EquipScript.isSpearEquipped() ? ___m_rightItemInstance.AddComponent<SpearWield>() : ___m_rightItemInstance.AddComponent<WeaponWield>();
+            LocalWeaponWield weaponWield = EquipScript.isSpearEquipped() ? ___m_rightItemInstance.AddComponent<SpearWield>() : ___m_rightItemInstance.AddComponent<LocalWeaponWield>();
             weaponWield.itemName = ___m_rightItem;
             weaponWield.Initialize(false);
 
@@ -137,7 +137,7 @@ namespace ValheimVRMod.Patches {
                 StaticObjects.leftHandQuickMenu.GetComponent<LeftHandQuickMenu>().refreshItems();
             }
 
-            WeaponWield weaponWield;
+            LocalWeaponWield weaponWield;
             switch (EquipScript.getLeft()) {
                 
                 case EquipType.Bow:
@@ -157,7 +157,7 @@ namespace ValheimVRMod.Patches {
                     crossbowManager.gameObject.AddComponent<WeaponBlock>().weaponWield = crossbowManager;
                     return;
                 case EquipType.Lantern:
-                    weaponWield = ___m_leftItemInstance.AddComponent<WeaponWield>().Initialize(true);
+                    weaponWield = ___m_leftItemInstance.AddComponent<LocalWeaponWield>().Initialize(true);
                     weaponWield.itemName = ___m_leftItem;
                     break;
                 case EquipType.Shield:
@@ -174,7 +174,7 @@ namespace ValheimVRMod.Patches {
     [HarmonyPatch(typeof(VisEquipment), "SetHelmetEquiped")]
     class PatchHelmet {
         static void Postfix(bool __result, GameObject ___m_helmetItemInstance) {
-            
+
             if (!__result || !VHVRConfig.UseVrControls()) {
                 return;
             }
@@ -256,7 +256,19 @@ namespace ValheimVRMod.Patches {
         /// <summary>
         /// For Left Handed mode we need to mirror models of shields and tankard 
         /// </summary>
-        static void Postfix(GameObject __result) {
+        static void Postfix(VisEquipment __instance, GameObject __result, int itemHash) {
+            
+            if (__instance.m_isPlayer && __result != null && itemHash == 703889544)
+            {
+                var lights = __result.GetComponentsInChildren<Light>();
+                if (lights.Length > 1)
+                {
+                    LogUtils.LogChildTree(__result.transform);
+                    lights[0].intensity = 0;
+                    // lights[0].enabled = false;
+                }
+            }
+
 
             if (Player.m_localPlayer == null 
                 || __result == null
@@ -270,6 +282,31 @@ namespace ValheimVRMod.Patches {
             
             __result.transform.localScale = new Vector3 (__result.transform.localScale.x, __result.transform.localScale.y * -1 , __result.transform.localScale.z);
 
+        }
+    }
+
+    class LightUpdater : MonoBehaviour
+    {
+        private bool isLocalPlayer;
+
+        void Awake()
+        {
+            Player player = gameObject.GetComponentInParent<Player>();
+            isLocalPlayer = (player != null && player == Player.m_localPlayer);
+        }
+
+        void Update()
+        {
+            if (isLocalPlayer)
+            {
+                var lights = gameObject.GetComponentsInChildren<Light>();
+                if (lights.Length > 1)
+                {
+                    // LogUtils.LogChildTree(gameObject.transform);
+                    LogUtils.LogWarning("Lights: " + lights.Length + " --- " + lights[0].name + " --- " + lights[1].name);
+                    lights[1].intensity = 0;
+                }
+            }
         }
     }
 
