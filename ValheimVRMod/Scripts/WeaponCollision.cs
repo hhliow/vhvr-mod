@@ -73,7 +73,7 @@ namespace ValheimVRMod.Scripts {
                 return;
             }
 
-            isDrinking = hasDrunk = weaponWield.mainHand.transform.rotation.eulerAngles.x > 0 && weaponWield.mainHand.transform.rotation.eulerAngles.x < 90;
+            isDrinking = hasDrunk = weaponWield.mainHandTransform.rotation.eulerAngles.x > 0 && weaponWield.mainHandTransform.rotation.eulerAngles.x < 90;
 
             //bHaptics
             if (isDrinking && !BhapticsTactsuit.suitDisabled)
@@ -320,7 +320,7 @@ namespace ValheimVRMod.Scripts {
             }
             
             snapshots.Add(transform.localPosition);
-            weaponHandleSnapshots.Add(weaponWield.mainHand.transform.position);
+            weaponHandleSnapshots.Add(weaponWield.mainHandTransform.position);
             if (snapshots.Count > maxSnapshots) {
                 snapshots.RemoveAt(0);
             }

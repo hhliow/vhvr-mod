@@ -39,7 +39,7 @@ namespace ValheimVRMod.Scripts {
 
         protected override void RotateHandsForTwoHandedWield(Vector3 weaponPointingDir) {
             Quaternion lookRotation = Quaternion.LookRotation(weaponPointingDir, GetPreferredTwoHandedWeaponUp());
-            if (frontHand == VRPlayer.leftHand)
+            if (twoHandedState == TwoHandedState.RightHandBehind)
             {
                 VrikCreator.leftHandConnector.rotation = lookRotation * frontGripRotationForLeftHand;
             }
@@ -62,14 +62,14 @@ namespace ValheimVRMod.Scripts {
 
         protected override Vector3 GetPreferredTwoHandedWeaponUp()
         {
-            Vector3 rearHandRadial = rearHand.transform.up;
+            Vector3 rearHandRadial = rearHandTransform.up;
             switch (VHVRConfig.CrossbowSaggitalRotationSource())
             {
                 case "RearHand":
                     return rearHandRadial;
                 case "BothHands":
-                    Vector3 frontHandPalmar = LocalPlayerTwoHandedState == TwoHandedState.LeftHandBehind ? -frontHand.transform.right : frontHand.transform.right;
-                    Vector3 frontHandRadial = frontHand.transform.up;
+                    Vector3 frontHandPalmar = LocalPlayerTwoHandedState == TwoHandedState.LeftHandBehind ? -frontHandTransform.right : frontHandTransform.right;
+                    Vector3 frontHandRadial = frontHandTransform.up;
                     return (frontHandPalmar * 1.73f + frontHandRadial).normalized + rearHandRadial;
                 default:
                     LogUtils.LogWarning("WeaponWield: unknown CrossbowSaggitalRotationSource");
@@ -84,7 +84,7 @@ namespace ValheimVRMod.Scripts {
 
         protected override bool TemporaryDisableTwoHandedWield()
         {
-            return crossbowMorphManager.isPulling || crossbowMorphManager.IsHandClosePullStart();
+            return base.TemporaryDisableTwoHandedWield() || crossbowMorphManager.isPulling || crossbowMorphManager.IsHandClosePullStart();
         }
 
         public static bool IsPullingTrigger()
@@ -93,7 +93,7 @@ namespace ValheimVRMod.Scripts {
             {
                 return false;
             }
-            return instance.rearHand == VRPlayer.leftHand ? SteamVR_Actions.valheim_UseLeft.stateDown : SteamVR_Actions.valheim_Use.stateDown;
+            return LocalPlayerTwoHandedState == TwoHandedState.LeftHandBehind ? SteamVR_Actions.valheim_UseLeft.stateDown : SteamVR_Actions.valheim_Use.stateDown;
         }
 
         public static Vector3 AimDir { get { return weaponForward; } }

@@ -55,7 +55,7 @@ namespace ValheimVRMod.Scripts
 
         protected override bool TemporaryDisableTwoHandedWield()
         {
-            return ThrowableManager.isAiming || ThrowableManager.isThrowing;
+            return base.TemporaryDisableTwoHandedWield() || ThrowableManager.isAiming || ThrowableManager.isThrowing;
         }
 
         protected override Vector3 GetWeaponPointingDir()
