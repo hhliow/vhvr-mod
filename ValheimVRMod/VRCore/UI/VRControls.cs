@@ -282,6 +282,17 @@ namespace ValheimVRMod.VRCore.UI
             {
                 return false;
             }
+            if (SteamVR_Actions.valheim_ToggleMap.GetStateDown(SteamVR_Input_Sources.Any))
+            {
+                if (zinput == "Inventory")
+                {
+                    return !SteamVR_Actions.valheim_Grab.GetState(SteamVR_Input_Sources.RightHand);
+                }
+                if (zinput == "ToggleMiniMap")
+                {
+                    return SteamVR_Actions.valheim_Grab.GetState(SteamVR_Input_Sources.RightHand);
+                }
+            }
             if (zinput == "Map") {
                 if (QuickAbstract.toggleMap)
                 {
