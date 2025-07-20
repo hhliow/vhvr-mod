@@ -103,10 +103,14 @@ namespace ValheimVRMod.Patches {
                     if (joystick > -0.3f && joystick < 0.3f)
                     {
                         __result = 0f;
-                        return;
                     }
+                    else
+                    {
+                        __result += joystick;
+                    }
+                    return;
                 }
-                __result = __result + VRControls.instance.GetJoyLeftStickX() + (VRPlayer.gesturedLocomotionManager?.stickOutputX ?? 0);
+                __result = __result + VRControls.smoothWalkX / VHVRConfig.AutoRunThreshold() + (VRPlayer.gesturedLocomotionManager?.stickOutputX ?? 0);
             }
         }
     }
@@ -119,15 +123,20 @@ namespace ValheimVRMod.Patches {
                 var joystick = VRControls.instance.GetJoyLeftStickY();
 
                 //add deadzone to ship control for forward and backward so its harder to accidentally change speed
-                if (Player.m_localPlayer?.GetControlledShip())
+                if (Player.m_localPlayer != null && Player.m_localPlayer.IsAttached())
                 {
                     if(joystick > -0.9f && joystick < 0.9f)
                     {
                         __result = 0f;
-                        return;
                     }
+                    else
+                    {
+                        __result += joystick;
+                    }
+                    return;
                 }
-                __result = __result + joystick + (VRPlayer.gesturedLocomotionManager?.stickOutputY?? 0);
+
+                __result = __result + VRControls.smoothWalkY / VHVRConfig.AutoRunThreshold() + (VRPlayer.gesturedLocomotionManager?.stickOutputY?? 0);
             }
         }
     }
@@ -137,9 +146,14 @@ namespace ValheimVRMod.Patches {
         static void Postfix(ref float __result) {
             if (VRControls.mainControlsActive) {
 
-                if (ZInput_GetJoyRightStickY_Patch.isRunning 
+                if (ZInput_GetJoyRightStickY_Patch.hasRunInput 
                     && VRControls.instance.GetJoyRightStickX() > -0.5f 
                     && VRControls.instance.GetJoyRightStickX() < 0.5f)
+                {
+                    return;
+                }
+
+                if (VRPlayer.inImmersiveDodge)
                 {
                     return;
                 }
@@ -164,14 +178,18 @@ namespace ValheimVRMod.Patches {
         private const float TOGGLE_RUN_SENSITIVITY = -0.85f;
         private const float CROUCH_SENSITIVITY = 0.85f;
 
-        public static bool isCrouching;
-        public static bool isRunning;
+        public static bool togglingRun { get; private set; }
+        public static bool holdingRun { get; private set; }
+        public static bool hasRunInput { get; private set; }
+        public static bool isCrouching { get; private set; }
 
         static void Postfix(ref float __result) {
             if (VRControls.mainControlsActive) {
                 var joystick = VRControls.instance.GetJoyRightStickY();
 
-                isRunning = joystick < (VHVRConfig.ToggleRun() ? TOGGLE_RUN_SENSITIVITY : NON_TOGGLE_RUN_SENSITIVITY);
+                togglingRun = joystick < TOGGLE_RUN_SENSITIVITY;
+                holdingRun = joystick < NON_TOGGLE_RUN_SENSITIVITY;
+                hasRunInput = VHVRConfig.ToggleRun() ? togglingRun : holdingRun;
                 isCrouching = joystick > CROUCH_SENSITIVITY;
 
                 __result = __result + joystick;
@@ -398,6 +416,12 @@ namespace ValheimVRMod.Patches {
 
             private static bool ShouldTriggerBuildPlacement(string inputName)
             {
+                if (WeaponCollision.hasPendingToolUsageOutput)
+                {
+                    WeaponCollision.hasPendingToolUsageOutput = false;
+                    return true;
+                }
+
                 if (!BuildingManager.instance)
                 {
                     return ZInput.GetButtonDown(inputName);
@@ -470,19 +494,29 @@ namespace ValheimVRMod.Patches {
             {
                 return;
             }
+
+            if (__instance.IsRiding())
+            {
+                run = run || ZInput_GetJoyRightStickY_Patch.togglingRun;
+                return;
+            }
+
             if (VHVRConfig.ToggleRun())
             {
                 handleRunToggle(ref run);
             }
-            else
+            else if (ZInput_GetJoyRightStickY_Patch.holdingRun)
             {
-                run = run || ZInput_GetJoyRightStickY_Patch.isRunning || (VRPlayer.gesturedLocomotionManager?.isRunning?? false);
+                run = true;
+                VRControls.isAutoRunActive = false;
             }
+
+            run = run || VRControls.isAutoRunActive;
         }
 
         private static void handleRunToggle(ref bool run)
         {
-            bool runIsTriggered = ZInput_GetJoyRightStickY_Patch.isRunning && !lastUpdateRunInput;
+            bool runIsTriggered = ZInput_GetJoyRightStickY_Patch.togglingRun && !lastUpdateRunInput;
             bool crouchApplied = ZInput_GetJoyRightStickY_Patch.isCrouching;
             if (crouchApplied || !VRPlayer.isMoving || Player.m_localPlayer.m_stamina < 1)
             {
@@ -491,11 +525,17 @@ namespace ValheimVRMod.Patches {
             }
             else if (runIsTriggered)
             {
-                // If the player applies sprint input this update, toggle the sprint.
-                runToggledOn = !runToggledOn;
+                if (VRControls.isAutoRunActive)
+                {
+                    VRControls.isAutoRunActive = runToggledOn = false;
+                }
+                else {
+                    // If the player applies sprint input this update, toggle the sprint.
+                    runToggledOn = !runToggledOn;
+                }
             }
-            run = runToggledOn || (VRPlayer.gesturedLocomotionManager?.isRunning?? false);
-            lastUpdateRunInput = ZInput_GetJoyRightStickY_Patch.isRunning;
+            run = runToggledOn;
+            lastUpdateRunInput = ZInput_GetJoyRightStickY_Patch.togglingRun;
         }
     }
 
@@ -546,7 +586,7 @@ namespace ValheimVRMod.Patches {
                 // Return immediately since we want to treat
                 // physical crouching as higher priority
                 return;
-            } else if (isCrouchToggled && !_isJoystickSneaking)
+            } else if (isCrouchToggled && !_isJoystickSneaking && !player.IsSitting() && !VRPlayer.startingSit)
             {
                 // Player is not crouching physically, but game character is
                 // in crouch mode, so toggle it off
@@ -568,7 +608,7 @@ namespace ValheimVRMod.Patches {
         static void handleControllerOnlySneak(Player player, ref bool crouch, bool isCrouchToggled)
         {
             bool crouchToggleTriggered = ZInput_GetJoyRightStickY_Patch.isCrouching && !lastUpdateCrouchInput;
-            bool standupTriggered = ZInput_GetJoyRightStickY_Patch.isRunning;
+            bool standupTriggered = ZInput_GetJoyRightStickY_Patch.hasRunInput;
             if (crouchToggleTriggered)
             {
                 crouch = true;
@@ -613,20 +653,20 @@ namespace ValheimVRMod.Patches {
                     blockHold = true;
                     BowLocalManager.aborting = false;
                 }
-                else if (BowLocalManager.startedPulling) {
+                else if (BowLocalManager.startedPullingArrow) {
                     if (Player.m_localPlayer.GetLeftItem().m_shared.m_attack.m_bowDraw)
                         attack = true;
-                    BowLocalManager.startedPulling = false;
+                    BowLocalManager.startedPullingArrow = false;
                 }
                 else {
                     if (Player.m_localPlayer.GetLeftItem().m_shared.m_attack.m_bowDraw)
                     {
-                        attackHold = BowLocalManager.isPulling;
+                        attackHold = BowLocalManager.isPullingArrow;
                     }
                     else
                     {
                         
-                        if (BowLocalManager.isPulling && SteamVR_Actions.valheim_Use.state && timer >= timeEnd)
+                        if (BowLocalManager.isPullingArrow && SteamVR_Actions.valheim_Use.state && timer >= timeEnd)
                         {
                             timeEnd = 2f;
                             timer = 0f;
@@ -637,7 +677,7 @@ namespace ValheimVRMod.Patches {
                         else
                         {
                             attack = false;
-                            attackHold = false ;
+                            attackHold = false;
                         }
                         var currentAnimatorClip = Player.m_localPlayer.m_animator.GetCurrentAnimatorClipInfo(0)?[0].clip;
                         if (currentAnimatorClip?.name == "Bow Aim Recoil")
@@ -664,10 +704,6 @@ namespace ValheimVRMod.Patches {
             {
                 attack = true;
                 attackHold = true;
-                if (!CrossbowMorphManager.instance.shouldAutoReload)
-                {
-                    CrossbowMorphManager.instance.destroyBolt();
-                }
             }
 
             switch (EquipScript.getRight()) {
@@ -714,7 +750,6 @@ namespace ValheimVRMod.Patches {
                     }
                     break;
 
-
                 case EquipType.RuneSkyheim:
                     if (SteamVR_Actions.valheim_Use.state && SteamVR_Actions.valheim_Grab.state && timer >= timeEnd)
                     {
@@ -738,6 +773,87 @@ namespace ValheimVRMod.Patches {
         }
     }
 
+    [HarmonyPatch(typeof(Player), nameof(Player.StartDoodadControl))]
+    class SadleStartPatch
+    {
+        static void Postfix(Player __instance)
+        {
+            if (VHVRConfig.UseVrControls())
+            {
+                __instance.GetComponent<Reining>()?.SetReinAttach();
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Sadle), nameof(Sadle.ApplyControlls))]
+    class SadleControlPatch
+    {
+        static void Prefix(ref Vector3 lookDir, ref bool block)
+        {
+            if (VHVRConfig.NonVrPlayer())
+            {
+                return;
+            }
+            if (VHVRConfig.UseVrControls())
+            {
+                block = Reining.turnInPlace;
+            }
+            lookDir =
+                Reining.shouldOverrideSpeedOrDirection ?
+                (Vector3)Reining.targetDirection :
+                Valve.VR.InteractionSystem.Player.instance.hmdTransform.forward; // This makes the mounts try to follow the hmd eyedir
+        }
+    }
+
+    [HarmonyPatch(typeof(Player), "Update")]
+    class PlayerUpdateSadleStayPatch
+    {
+        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+        {
+            if (!VHVRConfig.UseVrControls()) {
+                return instructions;
+            }
+
+            var original = new List<CodeInstruction>(instructions);
+            for (int i = 0; i < original.Count; i++)
+            {
+                if (original[i].Calls(MountedAttackUtils.stopDoodadControlMethod))
+                {
+                    // Do not let the player unmount unless jumping.
+                    // This prevents interactions such as range weapon attack from unmounting when riding.
+                    var changed = CodeInstruction.Call(typeof(MountedAttackUtils), nameof(MountedAttackUtils.UnmountIfJumping));
+                    changed.labels = original[i].labels;
+                    original[i] = changed;
+                }
+            }
+            return original;
+        }
+    }
+
+    [HarmonyPatch(typeof(Player), "SetControls")]
+    class PlayerSetControlsSadleStayPatch
+    {
+        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+        {
+            if (!VHVRConfig.UseVrControls()) {
+                return instructions;
+            }
+
+            var original = new List<CodeInstruction>(instructions);
+            for (int i = 0; i < original.Count; i++)
+            {
+                if (original[i].Calls(MountedAttackUtils.stopDoodadControlMethod))
+                {
+                    // Do not let the player unmount unless jumping.
+                    // This prevents interactions such as range weapon attack from unmounting when riding.
+                    var changed = CodeInstruction.Call(typeof(MountedAttackUtils), nameof(MountedAttackUtils.UnmountIfJumping));
+                    changed.labels = original[i].labels;
+                    original[i] = changed;
+                }
+            }
+            return original;
+        }
+    }
 
     // Used to make stack splitting easier
     [HarmonyPatch(typeof(InventoryGui), "Awake")]
@@ -889,6 +1005,7 @@ namespace ValheimVRMod.Patches {
                 {
                     return;
                 }
+
                 if (snapTriggered && !isSmoothSnapping)
                 {
                     if (turnInputApplied(mouseLook.x))
@@ -905,6 +1022,19 @@ namespace ValheimVRMod.Patches {
                 {
                     handleImmediateSnap(ref mouseLook);
                 }
+            }
+
+            static void Postfix(Player __instance, Vector2 mouseLook)
+            {
+                if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls() || !__instance.IsAttached())
+                {
+                    return;
+                }
+
+                // The player character cannot yaw when attached so we must yaw the VR rig explicitly.
+                var rotation = Quaternion.Euler(0f, mouseLook.x, 0f);
+                VRPlayer.instance.transform.rotation *= rotation;
+                Player_Rotation_Patch.attachmentIndependentRoomRotation *= rotation;
             }
 
             private static void handleSmoothSnap(ref Vector2 mouseLook)
@@ -1022,24 +1152,50 @@ namespace ValheimVRMod.Patches {
         public static bool wasDodging = false;
         static void Postfix(Player __instance)
         {
-            if (VHVRConfig.NonVrPlayer())
+            if (VHVRConfig.NonVrPlayer() || __instance != Player.m_localPlayer)
+            {
                 return;
+            }
 
-            Vector3 dir = __instance.GetMoveDir();
-            if (dir == Vector3.zero)
+            if (VRPlayer.vrPlayerInstance == null)
+            {
                 return;
+            }
 
+            if (VRPlayer.vrPlayerInstance.wasDodging)
+            {
+                // Give VRPlayer a chance to reset camera position and rotation after immersive dodge roll.
+                return;
+            }
+
+            Vector3? dir;
             if (SteamVR_Actions.valheim_UseLeft.state && SteamVR_Actions.valheim_Jump.stateDown)
             {
-                if (__instance.m_stamina < __instance.m_dodgeStaminaUsage)
+                dir = __instance.GetMoveDir();
+                if (dir == Vector3.zero)
                 {
-                    // FIXME: Mystlands probably changed this from StaminaBarNoStaminaFlash
-                    Hud.instance.StaminaBarEmptyFlash();
                     return;
                 }
-                __instance.Dodge(dir);
-                wasDodging = true;
             }
+            else
+            {
+                dir = VRPlayer.gesturedLocomotionManager?.dodgeDirection;
+                if (dir == null)
+                {
+                    return;
+                }
+            }
+
+            if (__instance.m_stamina < __instance.m_dodgeStaminaUsage)
+            {
+                // FIXME: Mystlands probably changed this from StaminaBarNoStaminaFlash
+                Hud.instance.StaminaBarEmptyFlash();
+                return;
+            }
+
+            __instance.Dodge(dir.Value);
+
+            wasDodging = true;
         }
     }
 
@@ -1057,31 +1213,44 @@ namespace ValheimVRMod.Patches {
 
             __instance.m_queuedDodgeTimer -= dt;
             currdodgetimer -= dt;
+            bool vrDodging = false;
 
-            if (__instance.m_queuedDodgeTimer > 0f && __instance.IsOnGround() && !__instance.IsDead() && !__instance.InAttack() && !__instance.IsEncumbered() && !__instance.InDodge() && !__instance.IsStaggering())
+            if (__instance.m_queuedDodgeTimer > 0f &&
+                __instance.IsOnGround() && !__instance.IsDead() && !__instance.InAttack() && !__instance.IsEncumbered() &&
+                !__instance.InDodge() && !__instance.IsStaggering() &&
+                !VRPlayer.vrPlayerInstance.wasDodging)
             {
-                float num = __instance.m_dodgeStaminaUsage - __instance.m_dodgeStaminaUsage * __instance.m_equipmentMovementModifier;
-                if (__instance.HaveStamina(num))
+                float staminaCost = __instance.m_dodgeStaminaUsage - __instance.m_dodgeStaminaUsage * __instance.GetEquipmentDodgeStaminaModifier();
+                if (__instance.HaveStamina(staminaCost))
                 {
                     __instance.ClearActionQueue();
                     __instance.m_queuedDodgeTimer = 0f;
                     currdodgetimer = 0.8f;
+                    if (VHVRConfig.ImmersiveDodgeRoll())
+                    {
+                        var roomPosition = VRPlayer.instance.transform.position;
+                        var roomRotation = VRPlayer.instance.transform.rotation;
+                        __instance.transform.rotation = Quaternion.LookRotation(__instance.m_queuedDodgeDir);
+                        __instance.m_body.rotation = __instance.transform.rotation;
+                        VRPlayer.instance.transform.SetPositionAndRotation(roomPosition, roomRotation);
+                    }
                     currDodgeDir = __instance.transform.forward;
-                    __instance.m_dodgeInvincible = true;
+                    __instance.m_dodgeInvincible = vrDodging = true;
                     __instance.m_zanim.SetTrigger("dodge");
                     __instance.AddNoise(5f);
-                    __instance.UseStamina(num);
+                    __instance.UseStamina(staminaCost);
                     __instance.m_dodgeEffects.Create(__instance.transform.position, Quaternion.identity, __instance.transform, 2f, -1);
                 }
             }
 
-            AnimatorStateInfo currentAnimatorStateInfo = __instance.m_animator.GetCurrentAnimatorStateInfo(0);
-            AnimatorStateInfo nextAnimatorStateInfo = __instance.m_animator.GetNextAnimatorStateInfo(0);
-            bool flag = __instance.m_animator.IsInTransition(0);
-            bool flag2 = __instance.m_animator.GetBool("dodge") || (currentAnimatorStateInfo.tagHash == Player.s_animatorTagDodge && !flag) || (flag && nextAnimatorStateInfo.tagHash == Player.s_animatorTagDodge);
-            bool value = flag2 && __instance.m_dodgeInvincible;
-            __instance.m_nview.GetZDO().Set("dodgeinv", value);
-            __instance.m_inDodge = flag2;
+            bool inDodge = __instance.m_animator.GetBool(Player.s_animatorTagDodge) || __instance.GetNextOrCurrentAnimHash() == Player.s_animatorTagDodge;
+            bool dodgeInvincible = vrDodging || (inDodge && __instance.m_dodgeInvincible);
+            if (__instance.m_dodgeInvincibleCached != dodgeInvincible)
+            {
+                __instance.m_nview.GetZDO().Set(ZDOVars.s_dodgeinv, dodgeInvincible);
+            }
+            __instance.m_dodgeInvincibleCached = dodgeInvincible;
+            __instance.m_inDodge = inDodge;
             if (currdodgetimer > 0)
             {
                 __instance.m_rootMotion = (__instance.m_queuedDodgeDir.normalized / 11) - (currDodgeDir / 15);

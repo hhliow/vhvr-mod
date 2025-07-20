@@ -31,13 +31,13 @@ namespace ValheimVRMod.Patches {
                 return;
             }
 
-            if(VHVRConfig.BlockingType() != "GrabButton")
+            if(!VHVRConfig.UseGrabButtonBlock())
             {
-                if (FistCollision.instance.usingFistWeapon())
+                if (StaticObjects.leftFist().blockingWithFist() || StaticObjects.rightFist().blockingWithFist())
                 {
                     ___m_blockTimer = FistBlock.instance?.blockTimer ?? Block.blockTimerNonParry;
                 }
-                else if (WeaponBlock.instance && (WeaponBlock.instance.weaponWield.allowBlocking() || WeaponBlock.instance.weaponWield.isLeftHandWeapon()))
+                else if (WeaponBlock.instance && (WeaponBlock.instance.weaponWield.allowBlocking() || LocalWeaponWield.nonDominantHandHasWeapon()))
                 {
                     ___m_blockTimer = WeaponBlock.instance?.blockTimer ?? Block.blockTimerNonParry;
                 }
@@ -48,21 +48,43 @@ namespace ValheimVRMod.Patches {
             }
             hit.m_dir = -__instance.transform.forward;
             handHapticTrigger = HandHapticTrigger.None;
+            var blocking = false;
             if (ShieldBlock.instance?.isBlocking() ?? false)
             {
+                blocking = true;
                 handHapticTrigger = VHVRConfig.LeftHanded() ? HandHapticTrigger.RightHand : HandHapticTrigger.LeftHand;
             }
             else if (WeaponBlock.instance?.isBlocking() ?? false)
             {
+                blocking = true;
                 handHapticTrigger = HandHapticTrigger.BothHand;
             }
             else if (FistBlock.instance?.isBlocking() ?? false)
             {
+                blocking = true;
                 handHapticTrigger = HandHapticTrigger.BothHand;
             }
             else
             { 
                 hit.m_dir = __instance.transform.forward;
+            }
+
+            if (!VHVRConfig.UseRealisticBlock())
+            {
+                return;
+            }
+
+            if (__instance.IsDodgeInvincible())
+            {
+                Block.indicateDodgeInvicible();
+            }
+            if (___m_blockTimer < 0.25f)
+            {
+                Block.indicateParrying();
+            }
+            else if (blocking)
+            {
+                Block.indicateBlocking();
             }
         }
         
@@ -117,7 +139,7 @@ namespace ValheimVRMod.Patches {
             if (__instance != Player.m_localPlayer || (FishingManager.instance && FishingManager.isFishing) || !VHVRConfig.UseVrControls()) {
                 return true;
             }
-            if(VHVRConfig.BlockingType() == "GrabButton")
+            if(VHVRConfig.UseGrabButtonBlock())
             {
                 WeaponBlock.instance?.UpdateGrabParry();
                 ShieldBlock.instance?.UpdateGrabParry();
@@ -160,6 +182,14 @@ namespace ValheimVRMod.Patches {
                 return;
             }
 
+            if (VHVRConfig.UseRealisticBlock())
+            {
+                Block.showHitIndicator(hit);
+                if (__instance.IsDodgeInvincible())
+                {
+                    Block.indicateDodgeInvicible();
+                }
+            }
             FistBlock.instance?.setBlocking(hit);
             ShieldBlock.instance?.setBlocking(hit);
             WeaponBlock.instance?.setBlocking(hit);

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Reflection;
 using System.Collections.Generic;
 using HarmonyLib;
@@ -131,12 +131,10 @@ namespace ValheimVRMod.Patches
                     {
                         __instance.Interact(leftHover, true, false);
                     }
-                } else if (leftHover)
+                }
+                else if (leftHover)
                 {
                     __instance.Interact(leftHover, false, false);
-                } else if (___m_doodadController != null)
-                {
-                    __instance.StopDoodadControl();
                 }
             }
         }
@@ -149,7 +147,7 @@ namespace ValheimVRMod.Patches
 
             private static float raycastDistanceLimit = 50f;
 
-            static void Postfix(Player __instance, ref GameObject hover, int ___m_interactMask)
+            static void Postfix(Player __instance, ref GameObject hover, ref Character hoverCreature, int ___m_interactMask)
             {
                 if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls())
                 {
@@ -157,12 +155,13 @@ namespace ValheimVRMod.Patches
                     currentHitPositionLeft = Vector3.zero;
                     return;
                 }
-                UpdateHoverObject(__instance, ref hover, ___m_interactMask, VRPlayer.rightPointer, ref currentHitPositionRight);
-                UpdateHoverObject(__instance, ref leftHover, ___m_interactMask, VRPlayer.leftPointer, ref currentHitPositionLeft);
+                UpdateHoverObject(__instance, ref hover, ref hoverCreature, ___m_interactMask, VRPlayer.rightPointer, ref currentHitPositionRight);
+                UpdateHoverObject(__instance, ref leftHover, ref hoverCreature, ___m_interactMask, VRPlayer.leftPointer, ref currentHitPositionLeft);
             }
 
 
-            private static void UpdateHoverObject(Player instance, ref GameObject hoverReference, int mask, Valve.VR.Extras.SteamVR_LaserPointer pointer, ref Vector3 hitPosition)
+            private static void UpdateHoverObject(
+                Player instance, ref GameObject hoverReference, ref Character hoverCreature, int mask, Valve.VR.Extras.SteamVR_LaserPointer pointer, ref Vector3 hitPosition)
             {
                 if (pointer == null)
                 {
@@ -172,47 +171,51 @@ namespace ValheimVRMod.Patches
                 hoverReference = null;
                 var startingPosition = pointer.rayStartingPosition;
                 var rayDirection = pointer.rayDirection;
-                RaycastHit[] raycastHitArray1 = Physics.RaycastAll(startingPosition, rayDirection * Vector3.forward, raycastDistanceLimit, mask);
-                Array.Sort(raycastHitArray1, (RaycastHit x, RaycastHit y) => x.distance.CompareTo(y.distance));
-                int num = 0;
+                var hits = Physics.RaycastAll(startingPosition, rayDirection * Vector3.forward, raycastDistanceLimit, mask);
+                
+                Array.Sort(hits, (RaycastHit x, RaycastHit y) => x.distance.CompareTo(y.distance));
                 hitPosition = startingPosition + rayDirection * Vector3.forward * raycastDistanceLimit;
-                while (num < raycastHitArray1.Length)
+                for (int i = 0; i < hits.Length; i++)
                 {
-                    RaycastHit raycastHit = raycastHitArray1[num];
-                    if (!raycastHit.collider.attachedRigidbody || !(raycastHit.collider.attachedRigidbody.gameObject == instance.gameObject))
+                    RaycastHit hit = hits[i];
+                    if (hit.collider.attachedRigidbody &&
+                        hit.collider.attachedRigidbody.gameObject == instance.gameObject)
                     {
-                        if (Vector3.Distance(instance.m_eye.position, raycastHit.point) >= instance.m_maxInteractDistance)
+                        continue;
+                    }
+
+                    if (hoverCreature == null)
+                    {
+                        Character character = hit.collider.attachedRigidbody ? hit.collider.attachedRigidbody.GetComponent<Character>() : hit.collider.GetComponent<Character>();
+                        if (character != null &&
+                            (!character.GetBaseAI() || !character.GetBaseAI().IsSleeping()) &&
+                            !ParticleMist.IsMistBlocked(instance.GetCenterPoint(), character.GetCenterPoint()))
                         {
-                            break;
+                            hoverCreature = character;
                         }
-                        hitPosition = raycastHit.point;
-                        if (raycastHit.collider.GetComponent<Hoverable>() != null)
-                        {
-                            hoverReference = raycastHit.collider.gameObject;
-                            return;
-                        }
-                        //MovableBase is the gameobject name for Valheim Raft Mod object
-                        if (raycastHit.collider.attachedRigidbody && raycastHit.collider.attachedRigidbody.name == "MovableBase")
-                        {
-                            hoverReference = raycastHit.collider.gameObject;
-                            return;
-                        }
-                        if (!raycastHit.collider.attachedRigidbody)
-                        {
-                            hoverReference = raycastHit.collider.gameObject;
-                            return;
-                        }
-                        hoverReference = raycastHit.collider.attachedRigidbody.gameObject;
+                    }
+
+                    hitPosition = hit.point;
+
+                    if (Vector3.Distance(instance.m_eye.position, hitPosition) >= instance.m_maxInteractDistance)
+                    {
                         return;
+                    }
+
+                    if (hit.collider.GetComponent<Hoverable>() != null ||
+                        !hit.collider.attachedRigidbody ||
+                        hit.collider.attachedRigidbody.name == "MovableBase") // MovableBase is the gameobject name for Valheim Raft Mod object
+                    {
+                        hoverReference = hit.collider.gameObject;
                     }
                     else
                     {
-                        num++;
+                        hoverReference = hit.collider.attachedRigidbody.gameObject;
                     }
+
+                    return;
                 }
             }
         }
-
-
     }
 }

@@ -63,11 +63,15 @@ namespace ValheimVRMod.Patches {
     {
         static void Postfix(Player __instance, ItemDrop.ItemData weapon, ref float dt)
         {
-            if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls() || EquipScript.getLeft() != EquipType.Crossbow || CrossbowMorphManager.instance == null)
+            if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls())
             {
                 return;
             }
-            CrossbowMorphManager.instance.UpdateWeaponLoading(__instance, dt);
+            
+            if (EquipScript.getLeft() == EquipType.Crossbow && CrossbowMorphManager.instance != null)
+            {
+                CrossbowMorphManager.instance.UpdateWeaponLoading(__instance, dt);
+            }
         }
 
     }
@@ -75,21 +79,67 @@ namespace ValheimVRMod.Patches {
     [HarmonyPatch(typeof(Player), "QueueReloadAction")]
     class PatchQueueReloadAction
     {
+        static bool hasReloadedDundrDuringCurrentTwoHandedWield = false;
+
         static bool Prefix(Player __instance)
         {
-            if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls() || EquipScript.getLeft() != EquipType.Crossbow)
+            if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls())
             {
                 return true;
             }
-            return CrossbowManager.CanQueueReloadAction();
-        }
 
+            if (EquipScript.getLeft() == EquipType.Crossbow)
+            {
+                return CrossbowManager.CanQueueReloadAction();
+            }
+
+            if (VHVRConfig.OneHandedBow() || !VHVRConfig.CrossbowManualReload())
+            {
+                return true;
+            }
+
+            if (EquipScript.isDundrEquipped())
+            {
+                if (!LocalWeaponWield.isCurrentlyTwoHanded())
+                {
+                    hasReloadedDundrDuringCurrentTwoHandedWield = false;
+                    // Do not charge Dundr if holding it with only one hand.
+                    return false;
+                }
+                if (hasReloadedDundrDuringCurrentTwoHandedWield)
+                {
+                    // Do not charge Dundr if it has already been charged once during current two-handed wield.
+                    return false;
+                }
+                hasReloadedDundrDuringCurrentTwoHandedWield = true;
+                return true;
+            }
+
+            return true;
+        }
+    }
+
+    [HarmonyPatch(typeof(Attack), nameof(Attack.Start))]
+    class DestoryBoltAfterCrossbowAttackPatch
+    {
+        static void Postfix(Attack __instance, bool __result)
+        {
+            if (__result &&
+                __instance.m_character == Player.m_localPlayer &&
+                VHVRConfig.UseVrControls() &&
+                EquipScript.getLeft() == EquipType.Crossbow &&
+                CrossbowMorphManager.instance != null &&
+                !CrossbowMorphManager.instance.shouldAutoReload)
+            {
+                CrossbowMorphManager.instance.destroyBolt();
+            }
+        }
     }
 
     /**
         * Manipulate Position and Direction of the Arrow SpawnPoint
         */
-    [HarmonyPatch(typeof(Attack), "GetProjectileSpawnPoint")]
+    [HarmonyPatch(typeof(Attack), nameof(Attack.GetProjectileSpawnPoint))]
     class PatchGetProjectileSpawnPoint {
         static bool Prefix(Attack __instance, out Vector3 spawnPoint, out Vector3 aimDir, Humanoid ___m_character) {
 
@@ -125,7 +175,7 @@ namespace ValheimVRMod.Patches {
                 case EquipType.SpearChitin:
                 case EquipType.ThrowObject:
                     spawnPoint = ThrowableManager.spawnPoint;
-                    aimDir = ThrowableManager.aimDir;
+                    aimDir = ThrowableManager.aimDir.normalized * ThrowableManager.throwSpeed;
                     return false;
                 case EquipType.Magic:
                     spawnPoint = MagicWeaponManager.GetProjectileSpawnPoint(__instance);
@@ -160,34 +210,7 @@ namespace ValheimVRMod.Patches {
             }
         }
     }
-    
-    /**
-     * Remove attack animation by speeding it up. It only applies to attack moves,
-     * because the original method switches it back to normal for other animations
-     */
-    [HarmonyPatch(typeof(CharacterAnimEvent), nameof(CharacterAnimEvent.CustomFixedUpdate))]
 
-    class PatchFixedUpdate {
-
-        public static float lastSpeedUp = 1f;
-        static void Prefix(Character ___m_character, ref Animator ___m_animator) {
-            
-            if (___m_character != Player.m_localPlayer || !VHVRConfig.UseVrControls()) {
-                return;
-            }
-            if (!EquipScript.shouldSkipAttackAnimation() || ___m_character.IsStaggering())
-            {
-                ___m_animator.speed = 1f;
-                return;
-            }
-            if(___m_animator.speed != 1 && ___m_animator.speed != 1000)
-            {
-                lastSpeedUp = ___m_animator.speed;
-            }
-            ___m_animator.speed = 1000f;
-        }
-    }  
-    
     /**
     * remove character facing and inaccuracy for projectile stuff
     */
@@ -199,40 +222,41 @@ namespace ValheimVRMod.Patches {
                 return;
             }
 
-
-
             __instance.m_useCharacterFacing = false;
             __instance.m_launchAngle = 0;
 
-            if (VHVRConfig.RestrictBowDrawSpeed() != "None" && EquipScript.getLeft() == EquipType.Bow) {
-                if (VHVRConfig.BowAccuracyIgnoresDrawLength())
+            if (VHVRConfig.RestrictBowDrawSpeed() == "None" || EquipScript.getLeft() != EquipType.Bow)
+            {
+                __instance.m_projectileAccuracyMin = 0;
+                if (___m_ammoItem != null)
                 {
-
-                    float currentSpreadFactor = 1 - Mathf.Sqrt(BowLocalManager.instance.GetAttackPercentage());
-                    if (currentSpreadFactor <= 0)
-                    {
-                        return;
-                    }
-
-                    float desiredSpreadFactor = 1 - Mathf.Sqrt(BowLocalManager.instance.timeBasedChargePercentage);
-                    float accuracyAdjustment = desiredSpreadFactor / currentSpreadFactor;
-                    float minSpread = __instance.m_projectileAccuracy;
-
-                    // We scale the max spread (i. e. m_projectileAccuracyMin) to compensate for the difference between desiredSpreadFactor and currentSpreadFactor.
-                    __instance.m_projectileAccuracyMin = Mathf.Lerp(minSpread, __instance.m_projectileAccuracyMin, accuracyAdjustment);
-                    if (___m_ammoItem != null)
-                    {
-                        ___m_ammoItem.m_shared.m_attack.m_projectileAccuracyMin = Mathf.Lerp(___m_ammoItem.m_shared.m_attack.m_projectileAccuracy, ___m_ammoItem.m_shared.m_attack.m_projectileAccuracyMin, accuracyAdjustment);
-                    }
+                    ___m_ammoItem.m_shared.m_attack.m_projectileAccuracyMin = 0;
                 }
                 return;
             }
 
-            __instance.m_projectileAccuracyMin = 0;
-            if (___m_ammoItem != null) {
-                ___m_ammoItem.m_shared.m_attack.m_projectileAccuracyMin = 0;   
+            if (!VHVRConfig.BowAccuracyIgnoresDrawLength())
+            {
+                return;
             }
-        }
+
+            float currentSpreadFactor = 1 - Mathf.Sqrt(BowLocalManager.instance.GetAttackPercentage());
+            if (currentSpreadFactor <= 0)
+            {
+                return;
+            }
+
+            float desiredSpreadFactor = 1 - Mathf.Sqrt(BowLocalManager.instance.timeBasedChargePercentage);
+            float accuracyAdjustment = desiredSpreadFactor / currentSpreadFactor;
+            float minSpread = __instance.m_projectileAccuracy;
+
+            // We scale the max spread (i. e. m_projectileAccuracyMin) to compensate for the difference between desiredSpreadFactor and currentSpreadFactor.
+            __instance.m_projectileAccuracyMin = Mathf.Lerp(minSpread, __instance.m_projectileAccuracyMin, accuracyAdjustment);
+            if (___m_ammoItem != null)
+            {
+                ___m_ammoItem.m_shared.m_attack.m_projectileAccuracyMin = Mathf.Lerp(___m_ammoItem.m_shared.m_attack.m_projectileAccuracy, ___m_ammoItem.m_shared.m_attack.m_projectileAccuracyMin, accuracyAdjustment);
+            }
+    }
     }
     
     /**
@@ -243,8 +267,7 @@ namespace ValheimVRMod.Patches {
         
         static bool Prefix(ref Transform __result, Character owner) {
 
-            if (owner != Player.m_localPlayer
-                || FishingManager.fixedRodTop == null || !VHVRConfig.UseVrControls()) {
+            if (owner != Player.m_localPlayer || FishingManager.fixedRodTop == null || !VHVRConfig.UseVrControls()) {
                 return true;
             }
 
@@ -295,21 +318,39 @@ namespace ValheimVRMod.Patches {
             {
                 return;
             }
-            if (__instance.m_recoilPushback > 0f && EquipScript.getLeft() == EquipType.Crossbow)
+ 
+            if (__instance.m_recoilPushback <= 0f)
+            {
+                return;
+            }
+
+            if (EquipScript.getLeft() == EquipType.Crossbow || EquipScript.isDundrEquipped())
             {
                 recoilPushback = __instance.m_recoilPushback;
                 __instance.m_recoilPushback = 0f;
             }
         }
+
         public static void Postfix(Attack __instance)
         {
             if (__instance.m_character != Player.m_localPlayer || !VHVRConfig.UseVrControls())
             {
                 return;
             }
-            if (recoilPushback > 0f && EquipScript.getLeft() == EquipType.Crossbow)
+
+            if (recoilPushback <= 0f)
+            {
+                return;
+            }
+
+            if (EquipScript.getLeft() == EquipType.Crossbow)
             {
                 __instance.m_character.ApplyPushback(-CrossbowManager.AimDir, recoilPushback);
+                recoilPushback = 0f;
+            }
+            else if (EquipScript.isDundrEquipped())
+            {
+                __instance.m_character.ApplyPushback(-MagicWeaponManager.AimDir, recoilPushback);
                 recoilPushback = 0f;
             }
         }
