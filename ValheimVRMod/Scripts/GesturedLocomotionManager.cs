@@ -383,6 +383,7 @@ namespace ValheimVRMod.Scripts
             protected override Vector3 handVelocity { get { return VRPlayer.leftHandPhysicsEstimator.GetVelocity(); } }
             protected override Transform handTransform { get { return VRPlayer.leftHand.transform; } }
             protected override Transform otherHandTransform { get { return VRPlayer.rightHand.transform; } }
+            protected override Transform palmar { get { return VRPlayer.rightHand.transform.left; } }
         }
 
         class RightHandGesturedWalkRun : GesturedWalkRun {
@@ -396,6 +397,7 @@ namespace ValheimVRMod.Scripts
             protected override Vector3 handVelocity { get { return VRPlayer.rightHandPhysicsEstimator.GetVelocity(); } }
             protected override Transform handTransform { get { return VRPlayer.rightHand.transform; } }
             protected override Transform otherHandTransform { get { return VRPlayer.leftHand.transform; } }
+            protected override Transform palmar { get { return VRPlayer.leftHand.transform.right; } }
         }
 
         abstract class GesturedWalkRun : GesturedLocomotion
@@ -410,6 +412,7 @@ namespace ValheimVRMod.Scripts
             protected abstract Transform handTransform { get; }
 
             protected abstract Transform otherHandTransform { get; }
+            protected abstract Transform palmar { get; }
 
             public Vector3 movementVerticalPlaneNormal { get; private set; }
 
@@ -440,8 +443,9 @@ namespace ValheimVRMod.Scripts
 
                 walkDirection = walkDirection.normalized;
 
+                Vector3 armSpan = handTransform.position - otherHandTransform.position;
                 movementVerticalPlaneNormal = Vector3.Cross(upDirection.Value, walkDirection).normalized;
-                Vector3 wheelDiameter = Vector3.ProjectOnPlane(handTransform.position - otherHandTransform.position, movementVerticalPlaneNormal);
+                Vector3 wheelDiameter = Vector3.ProjectOnPlane(armSpan, movementVerticalPlaneNormal);
 
                 float walkSpeed =
                     Vector3.Dot(Vector3.Cross(wheelDiameter.normalized, handVelocity), movementVerticalPlaneNormal);
@@ -450,7 +454,7 @@ namespace ValheimVRMod.Scripts
                 {
                     isWalkingOrRunningUsingGestures = false;
                 }
-                else if (ShouldStart(wheelDiameter, walkDirection, Mathf.Abs(walkSpeed)))
+                else if (ShouldStart(armSpan, wheelDiameter, walkDirection, Mathf.Abs(walkSpeed)))
                 {
                     isWalkingOrRunningUsingGestures = true;
                     GesturedGlide.isGlideActive = false;
@@ -475,22 +479,32 @@ namespace ValheimVRMod.Scripts
                 return SteamVR_Actions.valheim_StopGesturedLocomotion.GetState(inputSource);
             }
 
-            private bool ShouldStart(Vector3 wheelDiameter, Vector3 walkDirection, float walkSpeed)
+            private bool ShouldStart(Vector3 armSpan, Vector3 wheelDiameter, Vector3 walkDirection, float walkSpeed)
             {
                 if  (SteamVR_Actions.valheim_StopGesturedLocomotion.GetState(SteamVR_Input_Sources.Any))
                 {
                     return false;
                 }
-                if (walkSpeed < 0.5f || wheelDiameter.magnitude < 0.5f)
+                float wheelDiamaterLength = wheelDiameter.magnitude;
+                if (walkSpeed < 0.5f || wheelDiamaterLength < 0.5f)
                 {
                     return false;
                 }
-                if (!IsStepping() && walkSpeed < 2 && Vector3.ProjectOnPlane(wheelDiameter, upDirection.Value).magnitude < 1)
+                Vector3 lateralArmSpan = armSpan - wheelDiameter;
+                if (lateralArmSpan.magnitude > 1.25f) {
+                    return false;
+                }
+                if (!IsStepping() && walkSpeed < 2 && wheelDiamaterLength < 1)
                 {
                     return false;
                 }
-                float angle = Vector3.Angle(handTransform.forward - handTransform.up, upDirection.Value);
-                return 60 < angle && angle < 120;
+                float palmarToUp = Vector3.Angle(palmar, upDirection.Value);
+                if (palmarToUp > 150) {
+                    // Palm facing down
+                    return true;
+                }
+                // Palm facing sideways?
+                return 60 < palmarToUp && palmarToUp < 120;
             }
 
             private bool IsStepping()
