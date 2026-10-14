@@ -298,6 +298,12 @@ namespace ValheimVRMod.Patches
                 StaticObjects.leftHandQuickMenu.GetComponent<LeftHandQuickMenu>().refreshItems();
             }
 
+            if (HeldConsumable.isHoldingInMainHand)
+            {
+                // A food held in the hand is not an equipped item and is not wielded.
+                return;
+            }
+
             switch (EquipScript.CurrentMainHandEquipType())
             {
                 case EquipType.Hammer:
@@ -477,6 +483,12 @@ namespace ValheimVRMod.Patches
 
             if (!VHVRConfig.UseVrControls())
             {
+                return;
+            }
+
+            if (HeldConsumable.isHoldingInOffHand)
+            {
+                // A food held in the hand is not an equipped item and is not wielded.
                 return;
             }
 
@@ -697,28 +709,30 @@ namespace ValheimVRMod.Patches
         }
 
         /// <summary>
-        /// For Left Handed mode we need to mirror models of shields and tankard 
+        /// Fixes how items are held in the hand. For Left Handed mode we also need to turn the shield that is on the
+        /// back.
         /// </summary>
-        static void Postfix(GameObject __result, int itemHash)
+        static void Postfix(VisEquipment __instance, ref GameObject __result, Transform joint, int itemHash)
         {
+            if (!__result)
+            {
+                __result = HeldItemFixes.AttachModel(joint, itemHash);
+            }
+
             if (!__result)
             {
                 return;
             }
 
-            var sync = __result.GetComponentInParent<VRPlayerSync>();
-            if (sync == null || !sync.isLeftHanded)
+            bool isInHand = joint == __instance.m_leftHand || joint == __instance.m_rightHand;
+            if (isInHand && __result.transform.parent == joint)
             {
+                HeldItemFixes.Apply(__result, joint, itemHash, isInLeftHand: joint == __instance.m_leftHand);
                 return;
             }
 
-            // TODO: consider fixing orietantion for summoners (e.g. the dead raiser) too.
-            var equipType = EquipScript.GetEquipTypeFromHash(itemHash);
-            if (equipType == EquipType.Tankard)
-            {
-                __result.transform.localScale = new Vector3(__result.transform.localScale.x, __result.transform.localScale.y * -1, __result.transform.localScale.z);
-            }
-            else if (equipType == EquipType.Shield)
+            var sync = __result.GetComponentInParent<VRPlayerSync>();
+            if (sync != null && sync.isLeftHanded && EquipScript.GetEquipTypeFromHash(itemHash) == EquipType.Shield)
             {
                 __result.transform.localRotation =
                     __result.transform.localRotation * Quaternion.Euler(0, 0, 180);
