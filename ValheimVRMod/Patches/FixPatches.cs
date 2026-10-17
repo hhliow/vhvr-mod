@@ -90,9 +90,12 @@ namespace ValheimVRMod.Patches
             __result = PlayOnceVrIsReady(__result);
         }
 
-        private static IEnumerator PlayOnceVrIsReady(IEnumerator playIntroCinematic)
+        // Also called from FejdStartup_Start_IntroHoldPatch, in case this Postfix does not take effect. Wrapping an
+        // already wrapped iterator is harmless: the inner wait ends at once.
+        internal static IEnumerator PlayOnceVrIsReady(IEnumerator playIntroCinematic)
         {
             float deadline = Time.realtimeSinceStartup + TIMEOUT_SECONDS;
+            int startFrame = Time.frameCount;
             // NonVrPlayer() covers both flat screen mode and VR failing to initialize, in which case it
             // starts returning true and there is nothing left to wait for.
             while (!VHVRConfig.NonVrPlayer() &&
@@ -109,10 +112,73 @@ namespace ValheimVRMod.Patches
                     "s, playing the startup cinematic on the flat screen.");
             }
 
+            LogUtils.LogDebug(
+                "Startup intro held for " + (Time.frameCount - startFrame) + " frame(s); VR GUI ready: " +
+                VRGUI.isReadyToShowCinematic + ".");
             while (playIntroCinematic.MoveNext())
             {
                 yield return playIntroCinematic.Current;
             }
+        }
+    }
+
+    // Also wraps the intro coroutine at its call site in FejdStartup.Start(). TryPlayIntroCinematic() only creates
+    // the iterator, small enough for the JIT to inline into Start(), in which case the Postfix above never runs and
+    // the intro starts in the start scene's first frame, before the rig exists. Start() is too big to be inlined.
+    [HarmonyPatch(typeof(FejdStartup), nameof(FejdStartup.Start))]
+    class FejdStartup_Start_IntroHoldPatch
+    {
+        private static readonly System.Reflection.MethodInfo tryPlayIntroCinematic =
+            AccessTools.Method(typeof(FejdStartup), nameof(FejdStartup.TryPlayIntroCinematic));
+
+        private static IEnumerator Wrap(IEnumerator introCinematic)
+        {
+            return VHVRConfig.NonVrPlayer() || introCinematic == null ?
+                introCinematic : IntroCinematicVrDelayPatch.PlayOnceVrIsReady(introCinematic);
+        }
+
+        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+        {
+            var patched = new List<CodeInstruction>();
+            int patchedCount = 0;
+            foreach (var instruction in instructions)
+            {
+                patched.Add(instruction);
+                if (instruction.Calls(tryPlayIntroCinematic))
+                {
+                    patched.Add(CodeInstruction.Call(typeof(FejdStartup_Start_IntroHoldPatch), nameof(Wrap)));
+                    patchedCount++;
+                }
+            }
+            if (patchedCount != 1)
+            {
+                LogUtils.LogError(
+                    "FejdStartup.Start: wrapped " + patchedCount +
+                    " of the 1 expected TryPlayIntroCinematic() call, the intro may play before VR is ready.");
+            }
+            return patched;
+        }
+    }
+
+    // In VR, VHVR owns the cameras. A cinematic started the vanilla way, before the rig existed, stored the vanilla
+    // Main Camera in m_mainCamera, and Stop() would enable it again behind VRPlayer's back: a second, untracked
+    // camera drawing the world and the GUI in the headset over the VR camera, which shows the menu twice. Once
+    // the rig exists that camera is meant to stay disabled, so Stop() is made to forget it. While VR is running
+    // normally CinematicsManager_Play_Patch already leaves m_mainCamera null and this does nothing.
+    // Based on https://github.com/brandonmousseau/vhvr-mod/pull/778.
+    [HarmonyPatch(typeof(CinematicsManager), nameof(CinematicsManager.Stop))]
+    class CinematicsManager_Stop_KeepVrCameraPatch
+    {
+        static void Prefix()
+        {
+            var cinematicsManager = CinematicsManager.s_instance;
+            if (VHVRConfig.NonVrPlayer() || VRPlayer.instance == null || cinematicsManager == null ||
+                cinematicsManager.m_mainCamera == null || cinematicsManager.m_mainCamera == VRPlayer.vrCam)
+            {
+                return;
+            }
+            LogUtils.LogInfo("Cinematic stopped: not enabling " + cinematicsManager.m_mainCamera.name + " in VR.");
+            cinematicsManager.m_mainCamera = null;
         }
     }
 

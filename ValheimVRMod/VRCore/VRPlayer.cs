@@ -1091,6 +1091,10 @@ namespace ValheimVRMod.VRCore
             }
             //Add fade component to camera for transition handling
             _fadeManager = vrCam.gameObject.AddComponent<FadingManager>();
+            if (vrCam.GetComponent<StereoViewSanityCheck>() == null)
+            {
+                vrCam.gameObject.AddComponent<StereoViewSanityCheck>();
+            }
             if (vrCam.GetComponent<ComfortVignette>() == null)
             {
                 vrCam.gameObject.AddComponent<ComfortVignette>();
@@ -1128,9 +1132,8 @@ namespace ValheimVRMod.VRCore
             GameObject handsCameraObject = new GameObject(CameraUtils.HANDS_CAMERA);
             Camera handsCamera = handsCameraObject.AddComponent<Camera>();
             handsCamera.CopyFrom(CameraUtils.getCamera(CameraUtils.VR_CAMERA));
-            // CopyFrom carries over the eye views that EyeSeparationScaler may have set on the VR camera, and they
-            // would stay frozen here since nothing updates them on this camera.
-            handsCamera.ResetStereoViewMatrices();
+            CameraUtils.resetCopiedXrMatrices(handsCamera);
+            handsCameraObject.AddComponent<StereoViewSanityCheck>();
             handsCamera.depth = 4;
             handsCamera.clearFlags = CameraClearFlags.Depth;
             handsCamera.cullingMask = LayerUtils.HANDS_LAYER_MASK;
@@ -1187,12 +1190,8 @@ namespace ValheimVRMod.VRCore
             // monoscopically (see stereoTargetEye below), where that matrix shows up vertically flipped. Resetting
             // it lets the camera derive its own projection from the field of view and aspect set further down,
             // both of which an explicitly set projection matrix would otherwise override.
-            _thirdPersonCamera.ResetProjectionMatrix();
-            // The same goes for the other matrices CopyFrom can carry over from the XR camera.
-            _thirdPersonCamera.ResetWorldToCameraMatrix();
-            _thirdPersonCamera.ResetCullingMatrix();
-            _thirdPersonCamera.ResetStereoProjectionMatrices();
-            _thirdPersonCamera.ResetStereoViewMatrices();
+            // This resets it along with the other matrices CopyFrom can carry over from the XR camera.
+            CameraUtils.resetCopiedXrMatrices(_thirdPersonCamera);
             _thirdPersonCamera.targetTexture = null;
             _thirdPersonCamera.depth = 4;
             bool isStabilizedCamera = VHVRConfig.UseStabilizedCameraOnFlatscreen();

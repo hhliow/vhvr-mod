@@ -47,6 +47,18 @@ namespace ValheimVRMod.Utilities
             to.backgroundColor = from.backgroundColor;
         }
 
+        // Camera.CopyFrom() copies the matrices of an XR camera as explicitly set ones, which then stay frozen on
+        // the copy: whatever the VR camera held at the moment of copying, which early on may not be a proper eye
+        // view yet. Resetting them hands them back to XR on a stereo camera, and lets a flat one derive its own.
+        public static void resetCopiedXrMatrices(Camera camera)
+        {
+            camera.ResetProjectionMatrix();
+            camera.ResetWorldToCameraMatrix();
+            camera.ResetCullingMatrix();
+            camera.ResetStereoProjectionMatrices();
+            camera.ResetStereoViewMatrices();
+        }
+
         public static Camera getWorldspaceUiCamera()
         {
             if (_worldSpaceUiCamera != null)
@@ -63,6 +75,8 @@ namespace ValheimVRMod.Utilities
             worldSpaceUiCamParent.transform.SetParent(vrCam.transform);
             _worldSpaceUiCamera = worldSpaceUiCamParent.AddComponent<Camera>();
             _worldSpaceUiCamera.CopyFrom(vrCam);
+            resetCopiedXrMatrices(_worldSpaceUiCamera);
+            worldSpaceUiCamParent.AddComponent<Scripts.StereoViewSanityCheck>();
             _worldSpaceUiCamera.clearFlags = CameraClearFlags.Depth;
             _worldSpaceUiCamera.depth = worldSpaceUiDepth;
             _worldSpaceUiCamera.renderingPath = RenderingPath.Forward;
