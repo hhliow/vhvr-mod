@@ -741,9 +741,8 @@ namespace ValheimVRMod.VRCore.UI
             GameObject uiPanelCameraObj = new GameObject(CameraUtils.VR_UI_CAMERA);
             _uiPanelCamera = uiPanelCameraObj.AddComponent<Camera>();
             _uiPanelCamera.CopyFrom(CameraUtils.getCamera(CameraUtils.VR_CAMERA));
-            // CopyFrom carries over the eye views that EyeSeparationScaler may have set on the VR camera, and they
-            // would stay frozen here since nothing updates them on this camera.
-            _uiPanelCamera.ResetStereoViewMatrices();
+            CameraUtils.resetCopiedXrMatrices(_uiPanelCamera);
+            uiPanelCameraObj.AddComponent<Scripts.StereoViewSanityCheck>();
             _uiPanelCamera.depth = _guiCamera.depth;
             _uiPanelCamera.clearFlags = CameraClearFlags.Depth;
             _uiPanelCamera.renderingPath = RenderingPath.Forward;
