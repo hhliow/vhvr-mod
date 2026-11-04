@@ -1,9 +1,9 @@
+using ValheimVRMod.VRCore.Backends;
 using HarmonyLib;
 using ValheimVRMod.Scripts.Block;
+using ValheimVRMod.Scripts;
 using ValheimVRMod.Utilities;
 using ValheimVRMod.VRCore;
-using Valve.VR;
-using Valve.VR.InteractionSystem;
 
 namespace ValheimVRMod.Patches {
     
@@ -13,26 +13,76 @@ namespace ValheimVRMod.Patches {
     [HarmonyPatch(typeof(Humanoid), "BlockAttack")]
     class PatchBlockAttack {
         
-        private static Hand hand;
-        private static SteamVR_Input_Sources handSource;
+        private static HandHapticTrigger handHapticTrigger = HandHapticTrigger.None;
+        private enum HandHapticTrigger
+        {
+            LeftHand,
+            RightHand,
+            BothHand,
+            None
+        }
         
         static void Prefix(Humanoid __instance, ref HitData hit, ref float ___m_blockTimer) {
 
             if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls()) {
                 return;
             }
-            ___m_blockTimer = ShieldBlock.instance?.blockTimer ?? WeaponBlock.instance?.blockTimer ?? Block.blockTimerNonParry;
-            hit.m_dir = -__instance.transform.forward;
-            if (ShieldBlock.instance?.isBlocking() ?? false) { 
-                hand = VRPlayer.leftHand;
-                handSource = SteamVR_Input_Sources.LeftHand;
-            } 
-            else if (WeaponBlock.instance?.isBlocking() ?? false) {
-                hand = VRPlayer.rightHand;
-                handSource = SteamVR_Input_Sources.RightHand;
+
+            if(!VHVRConfig.UseGrabButtonBlock())
+            {
+
+                if (WeaponBlock.instance && (WeaponBlock.instance.weaponWield.allowBlocking() || LocalWeaponWield.nonDominantHandHasWeapon()))
+                {
+                    ___m_blockTimer = WeaponBlock.instance?.blockTimer ?? Block.blockTimerNonParry;
+                }
+                else if (StaticObjects.leftFist().blockingWithFist() || StaticObjects.rightFist().blockingWithFist())
+                {
+                    ___m_blockTimer = FistBlock.instance?.blockTimer ?? Block.blockTimerNonParry;
+                }
+                else
+                {
+                    ___m_blockTimer = ShieldBlock.instance?.blockTimer ?? Block.blockTimerNonParry;
+                }
             }
-            else {
+            hit.m_dir = -__instance.transform.forward;
+            handHapticTrigger = HandHapticTrigger.None;
+            var blocking = false;
+            if (ShieldBlock.instance?.isBlocking() ?? false)
+            {
+                blocking = true;
+                handHapticTrigger = VRPlayer.isRightHandMainWeaponHand ? HandHapticTrigger.LeftHand : HandHapticTrigger.RightHand;
+            }
+            else if (WeaponBlock.instance?.isBlocking() ?? false)
+            {
+                blocking = true;
+                handHapticTrigger = HandHapticTrigger.BothHand;
+            }
+            else if (FistBlock.instance?.isBlocking() ?? false)
+            {
+                blocking = true;
+                handHapticTrigger = HandHapticTrigger.BothHand;
+            }
+            else
+            { 
                 hit.m_dir = __instance.transform.forward;
+            }
+
+            if (!VHVRConfig.UseRealisticBlock())
+            {
+                return;
+            }
+
+            if (__instance.IsDodgeInvincible())
+            {
+                Block.indicateDodgeInvicible();
+            }
+            if (___m_blockTimer < 0.25f)
+            {
+                Block.indicateParrying();
+            }
+            else if (blocking)
+            {
+                Block.indicateBlocking();
             }
         }
         
@@ -41,47 +91,143 @@ namespace ValheimVRMod.Patches {
             if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls() || !__result) {
                 return;
             }
-            
-            if (___m_blockTimer < ShieldBlock.blockTimerTolerance) {
-                hand.hapticAction.Execute(0, 0.4f, 100, 0.5f, handSource);
-                hand.hapticAction.Execute(0.4f, 0.7f, 100, 0.2f, handSource);
+            float delay = 0f;
+            float duration = 0f;
+            float freq = 100f;
+            float amplitude = 0f;
+            if (___m_blockTimer < Block.blockTimerTolerance) {
+                duration = 0.7f;
+                amplitude = 0.3f;
             }
             else {
-                hand.hapticAction.Execute(0, 0.2f, 100, 0.5f, handSource);
+                duration = 0.2f;
+                amplitude = 0.2f;
+            }
+
+            if (__instance.m_staggerDamage < __instance.GetStaggerTreshold()) 
+            {
+                switch (handHapticTrigger)
+                {
+                    case HandHapticTrigger.BothHand:
+                        VRPlayer.leftHand.hapticAction.Execute(delay, duration, freq, amplitude, VRInputSource.LeftHand);
+                        VRPlayer.rightHand.hapticAction.Execute(delay, duration, freq, amplitude, VRInputSource.RightHand);
+                        break;
+                    case HandHapticTrigger.LeftHand:
+                        VRPlayer.leftHand.hapticAction.Execute(delay, duration, freq, amplitude, VRInputSource.LeftHand);
+                        break;
+                    case HandHapticTrigger.RightHand:
+                        VRPlayer.rightHand.hapticAction.Execute(delay, duration, freq, amplitude, VRInputSource.RightHand);
+                        break;
+                }
             }
             
+
+            
+
             ShieldBlock.instance?.block();
             WeaponBlock.instance?.block();
+            FistBlock.instance?.block();
         }
     }
     
     [HarmonyPatch(typeof(Humanoid), "IsBlocking")]
     class PatchIsBlocking {
-        static bool Prefix(Humanoid __instance, ref bool __result) {
+        // Whether it is a harpooned character that is currently asking, to find out whether to come off the harpoon.
+        public static bool isCheckingHarpoonRelease;
 
-            if (__instance != Player.m_localPlayer || EquipScript.getRight() == EquipType.Fishing || !VHVRConfig.UseVrControls()) {
-                return true;
+        static bool Prefix(Humanoid __instance, ref float ___m_blockTimer, ref bool __result) {
+
+            if (isCheckingHarpoonRelease && __instance == Player.m_localPlayer && SpearWield.isSignallingHarpoonRelease)
+            {
+                __result = true;
+                return false;
             }
 
+            if (__instance != Player.m_localPlayer || (FishingManager.instance && FishingManager.isFishing) || !VHVRConfig.UseVrControls()) {
+                return true;
+            }
+            if(VHVRConfig.UseGrabButtonBlock())
+            {
+                WeaponBlock.instance?.UpdateGrabParry();
+                ShieldBlock.instance?.UpdateGrabParry();
+                FistBlock.instance?.UpdateGrabParry();
+                if (WeaponBlock.instance?.wasResetTimer == true|| ShieldBlock.instance?.wasResetTimer == true)
+                {
+                    ___m_blockTimer = 0;
+                    WeaponBlock.instance?.resetTimer();
+                    ShieldBlock.instance?.resetTimer();
+                    FistBlock.instance?.resetTimer();
+                }
+            }
+                
             __result = 
                 (ShieldBlock.instance?.isBlocking() ?? false) || 
-                (WeaponBlock.instance?.isBlocking() ?? false);
-            
+                (WeaponBlock.instance?.isBlocking() ?? false) ||
+                (FistBlock.instance?.isBlocking() ?? false);
+
             return false;
         }
     }
-    
+    [HarmonyPatch(typeof(SE_Harpooned), nameof(SE_Harpooned.IsDone))]
+    class PatchHarpoonedIsDone
+    {
+        static void Prefix()
+        {
+            PatchIsBlocking.isCheckingHarpoonRelease = true;
+        }
+
+        static void Postfix()
+        {
+            PatchIsBlocking.isCheckingHarpoonRelease = false;
+        }
+    }
+
+    [HarmonyPatch(typeof(Hud),nameof(Hud.UpdateStagger))]
+    class PatchStagger
+    {
+        static void Postfix(Hud __instance, Player player)
+        {
+            if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls())
+            {
+                return;
+            }
+            __instance.m_staggerAnimator.SetBool("Visible", player.GetStaggerPercentage()>0f);
+        }
+    }
+
     [HarmonyPatch(typeof(Character), "RPC_Damage")]
     class PatchRPCDamager {
         static void Prefix(Character __instance, HitData hit) {
 
-            if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls()) {
+            if (__instance != Player.m_localPlayer) {
                 return;
             }
-            
-            ShieldBlock.instance?.setBlocking(hit.m_dir);
-            WeaponBlock.instance?.setBlocking(hit.m_dir);
 
+            var vrCam = VRPlayer.vrCam;
+            if (vrCam != null)
+            {
+                var fadingManager = vrCam.GetComponent<FadingManager>();
+                if (fadingManager != null)
+                {
+                    fadingManager.OnPlayerInjure();
+                }
+            }
+            
+            if (!VHVRConfig.UseVrControls()) {
+                return;
+            }
+
+            if (VHVRConfig.UseRealisticBlock())
+            {
+                Block.showHitIndicator(hit);
+                if (__instance.IsDodgeInvincible())
+                {
+                    Block.indicateDodgeInvicible();
+                }
+            }
+            FistBlock.instance?.setBlocking(hit);
+            ShieldBlock.instance?.setBlocking(hit);
+            WeaponBlock.instance?.setBlocking(hit);
         }
         
         static void Postfix(Character __instance) {
@@ -92,8 +238,24 @@ namespace ValheimVRMod.Patches {
 
             ShieldBlock.instance?.resetBlocking();
             WeaponBlock.instance?.resetBlocking();
-
+            FistBlock.instance?.resetBlocking();
         }
     }
-    
+
+    [HarmonyPatch(typeof(Character),nameof(Character.AddStaggerDamage))]
+    class PatchStaggerDamage
+    {
+        static void Postfix(Character __instance)
+        {
+            if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls())
+            {
+                return;
+            }
+
+            if (__instance.m_staggerDamage >= __instance.GetStaggerTreshold())
+            {
+                VRPlayer.vrPlayerInstance.TriggerHandVibration(1.2f);
+            }
+        }
+    }
 }

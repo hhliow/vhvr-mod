@@ -1,252 +1,306 @@
+using System.Collections.Generic;
 using UnityEngine;
 using ValheimVRMod.Utilities;
-using ValheimVRMod.VRCore;
-using Valve.VR;
 
 namespace ValheimVRMod.Scripts
 {
-    public class WeaponWield : MonoBehaviour
+    public abstract class WeaponWield : MonoBehaviour, WeaponWield.LongGripStateProvider
     {
-        private Attack attack;
-        private bool weaponSubPos;
+        protected bool currentTwoHandedWieldStartedWithLongGrip { get; private set; }
 
-        public Vector3 weaponForward;
-        public string itemName;
-        private ItemDrop.ItemData item;
-        private GameObject rotSave;
-        public static isTwoHanded _isTwoHanded;
-        private SteamVR_Input_Sources mainHandInputSource;
-
-        public enum isTwoHanded
+        public enum TwoHandedState
         {
-            SingleHanded,
-            RightHandBehind,
-            LeftHandBehind
+            SingleHanded = 0,
+            RightHandBehind = 1,
+            LeftHandBehind = 2
         }
 
-        private void Awake()
+
+        public const float HAND_CENTER_OFFSET = 0.08f;
+
+        public TwoHandedState twoHandedState { get; private set; }
+        public Transform rearHandTransform { get; private set; }
+        public Transform frontHandTransform { get; private set; }
+
+        protected string attackAnimation { get; private set; }
+        protected int itemHash { get; private set; }
+        protected bool isDundr { get; private set; }
+
+        public Vector3 originalPosition { get { return originalTransform.position; } }
+        public Quaternion originalRotation { get { return originalTransform.rotation; } }
+        public Quaternion offsetFromPointingDir { get; protected set; } // The rotation offset of this transform relative to the direction the weapon is pointing at.
+        protected TwoHandedGeometryProvider geometryProvider;
+        protected float weaponLength { get; private set; }
+        protected float distanceBetweenGripAndRearEnd { get; private set; } = 0.1f;
+        private static Dictionary<int, Vector3> EstimatedWeaponLocalDirectionsAndLengths = new Dictionary<int, Vector3>();
+        private static Dictionary<int, float> DistancesBehindGripAndRearEnd = new Dictionary<int, float>();
+        private Transform originalTransform;
+        private Vector3 longestLocalExtrusion = Vector3.forward;
+        private VRPlayerSync playerSync { get { return _playerSync == null ? (_playerSync = GetComponentInParent<VRPlayerSync>()) : _playerSync; } }
+        private VRPlayerSync _playerSync;
+
+        private EquipType equipType;
+        private bool isLocal;
+        protected bool isDominantHandWeapon { get; private set; }
+
+        public WeaponWield Initialize(
+            ItemDrop.ItemData item, int itemHash, bool isDominantHandWeapon, WeaponWieldSync.TwoHandedStateProvider twoHandedStateProvider = null)
         {
-            rotSave = new GameObject();
-            rotSave.transform.SetParent(transform.parent);
-            rotSave.transform.position = transform.position;
-            rotSave.transform.localRotation = transform.localRotation;
+            isLocal = GetComponentInParent<Player>() == Player.m_localPlayer;
+            this.isDominantHandWeapon = isDominantHandWeapon;
+            this.itemHash = itemHash;
+            equipType = (item == null ? EquipType.None : EquipScript.GetEquipType(item));
 
-            item = Player.m_localPlayer.GetRightItem();
-            attack = item.m_shared.m_attack.Clone();
-            _isTwoHanded = isTwoHanded.SingleHanded;
+            attackAnimation = item?.m_shared.m_attack?.m_attackAnimation ?? "";
+            isDundr = EquipScript.IsDundr(item);
 
-            if (VHVRConfig.LeftHanded())
-            {
-                mainHandInputSource = SteamVR_Input_Sources.LeftHand;
-            }
-            else
-            {
-                mainHandInputSource = SteamVR_Input_Sources.RightHand;
-            }
+            originalTransform = new GameObject().transform;
+            originalTransform.parent = transform.parent;
+            originalTransform.position = transform.position;
+            originalTransform.rotation = transform.rotation;
 
-        }
-        private void OnDestroy()
-        {
-            ResetOffset();
-            Destroy(rotSave);
-        }
-
-        private void OnRenderObject()
-        {
-            WieldHandle();
-
-        }
-        private void WieldHandle()
-        {
-            switch (itemName)
-            {
-                case "Hoe":
-                case "Hammer":
-                case "FishingRod":
-                case "Cultivator":
-                    return;
-            }
-            switch (attack.m_attackAnimation)
-            {
-                case "knife_stab":
-                    KnifeWield();
-                    break;
-                default:
-                    UpdateTwoHandedWield();
-                    break;
-            }
-        }
-        private void KnifeWield()
-        {
-            if (_isTwoHanded != isTwoHanded.SingleHanded)
-            {
-                return;
-            }
-
-            if (SteamVR_Actions.valheim_Grab.GetState(mainHandInputSource))
-            {
-                ResetOffset();
-                transform.localRotation *= Quaternion.AngleAxis(180, Vector3.right);
-                weaponForward = transform.forward;
-                weaponSubPos = true;
-            }
-            else if (weaponSubPos)
-            {
-                ResetOffset();
-                weaponSubPos = false;
-            }
-
-        }
-        private void UpdateTwoHandedWield()
-        {
-            if (!VHVRConfig.TwoHandedWield())
-            {
-                return;
-            }
-
-            if (!VHVRConfig.TwoHandedWithShield() && EquipScript.getLeft() == EquipType.Shield)
-            {
-                if (weaponSubPos)
+            MeshFilter weaponMeshFilter = gameObject.GetComponentInChildren<MeshFilter>();
+            if (EquipScript.GetEquipTypeFromHash(itemHash) == EquipType.Hoe) {
+                var meshFilters = gameObject.GetComponentsInChildren<MeshFilter>();
+                foreach (var meshFilter in meshFilters)
                 {
-                    _isTwoHanded = isTwoHanded.SingleHanded;
-                    weaponSubPos = false;
-                    ResetOffset();
-                }
-                return;
-            }
-
-            if (SteamVR_Actions.valheim_Grab.GetState(SteamVR_Input_Sources.LeftHand) && 
-                SteamVR_Actions.valheim_Grab.GetState(SteamVR_Input_Sources.RightHand) &&
-                !(isSpear() && SpearManager.IsAiming()) )
-            {
-                float handAngleDiff = GetHandAngleDiff(VRPlayer.rightHand.transform, VRPlayer.leftHand.transform);
-                if (_isTwoHanded == isTwoHanded.SingleHanded)
-                {
-                    if (handAngleDiff > 0.6f)
+                    if (meshFilter.name == "handle")
                     {
-                        _isTwoHanded = isTwoHanded.RightHandBehind;
-                    }
-                    else if (handAngleDiff < -0.6f)
-                    {
-                        _isTwoHanded = isTwoHanded.LeftHandBehind;
-                    }
-                    else
-                    {
-                        return;
+                        weaponMeshFilter = meshFilter;
                     }
                 }
+            }
 
-                var rearHand = _isTwoHanded == isTwoHanded.LeftHandBehind ? VRPlayer.leftHand : VRPlayer.rightHand;
-                var frontHand = rearHand.otherHand;
-
-                var handDist = Vector3.Distance(frontHand.transform.position, rearHand.transform.position);
-                var weaponHoldVector = frontHand.transform.position - rearHand.transform.position;
-                var distLimit = 0f;
-                var distMultiplier = 0f;
-                var originMultiplier = -0.1f;
-                var rotOffset = 180;
-                bool rearHandIsDominant = (VHVRConfig.LeftHanded() == (_isTwoHanded == isTwoHanded.LeftHandBehind));
-                switch (attack.m_attackAnimation)
+            if (weaponMeshFilter != null)
+            {
+                if (item != null &&
+                    itemHash != 0 &&
+                    EstimatedWeaponLocalDirectionsAndLengths.ContainsKey(itemHash) &&
+                    DistancesBehindGripAndRearEnd.ContainsKey(itemHash))
                 {
-                    case "spear_poke":
-                        distMultiplier = -0.09f;
-                        distLimit = 0.09f;
-                        originMultiplier = 0.2f;
-                        break;
-                    case "atgeir_attack":
-                        distMultiplier = -0.18f;
-                        distLimit = 0.18f;
-                        originMultiplier = -0.7f;
-                        break;
-                    default:
-                        if (!rearHandIsDominant && !isSpear()) {
-                            // Anchor the weapon on the dominant hand.
-                            originMultiplier = Mathf.Min(handDist, 0.15f) - 0.1f;
-                        }
-                        break;
-                }
-                var weaponOffset = weaponHoldVector.normalized * (originMultiplier - distMultiplier / Mathf.Max(handDist, distLimit));
-                ResetOffset();
-
-                //VRIK Hand rotation
-                var frontHandConnector = _isTwoHanded == isTwoHanded.LeftHandBehind ? VrikCreator.rightHandConnector : VrikCreator.leftHandConnector;
-                var rearHandConnector = _isTwoHanded == isTwoHanded.LeftHandBehind ? VrikCreator.leftHandConnector : VrikCreator.rightHandConnector;
-                frontHandConnector.LookAt(frontHandConnector.position - weaponHoldVector, frontHand.transform.up);
-                rearHandConnector.LookAt(rearHandConnector.position + weaponHoldVector, rearHand.transform.up);
-                if (GetHandAngleDiff(frontHand.transform, rearHand.transform) <= 0)
-                {
-                    frontHandConnector.Rotate(Vector3.up, 180);
-                }
-                if (GetHandAngleDiff(rearHand.transform, frontHand.transform) < 0)
-                {
-                    rearHandConnector.Rotate(Vector3.up, 180);
-                }
-                rearHandConnector.Rotate(Vector3.right, 10);
-
-                //weapon pos&rotation
-                transform.position = rearHand.transform.position + weaponOffset;
-                if (isSpear() && !VHVRConfig.SpearInverseWield())
-                {
-                    transform.LookAt(frontHand.transform.position - weaponHoldVector.normalized * 5, transform.up);
-                    transform.localRotation = transform.localRotation * (rotSave.transform.localRotation) * Quaternion.AngleAxis(180, Vector3.right) * Quaternion.AngleAxis(rotOffset, transform.InverseTransformDirection(-weaponHoldVector));
-                    transform.localRotation = transform.localRotation * (rotSave.transform.localRotation) * Quaternion.AngleAxis(180, Vector3.right);
+                    var weaponDirectionAndLength = EstimatedWeaponLocalDirectionsAndLengths[itemHash];
+                    longestLocalExtrusion = weaponDirectionAndLength.normalized;
+                    weaponLength = weaponDirectionAndLength.magnitude;
+                    distanceBetweenGripAndRearEnd = DistancesBehindGripAndRearEnd[itemHash];
                 }
                 else
                 {
-                    transform.LookAt(rearHand.transform.position - weaponHoldVector.normalized * 5, transform.up);
-                    transform.localRotation = transform.localRotation * (rotSave.transform.localRotation) * Quaternion.AngleAxis(180, Vector3.right) * Quaternion.AngleAxis(rotOffset, transform.InverseTransformDirection(-weaponHoldVector));
+                    Vector3 weaponDirectionAndLength =
+                        transform.InverseTransformDirection(
+                            WeaponUtils.EstimateWeaponDirectionAndLength(
+                                weaponMeshFilter, handPosition: transform.parent.position, out float distanceBetweenGripAndRearEnd));
+                    this.distanceBetweenGripAndRearEnd = distanceBetweenGripAndRearEnd;
+                    longestLocalExtrusion = weaponDirectionAndLength.normalized;
+                    weaponLength = weaponDirectionAndLength.magnitude;
+                    if (item != null && itemHash != 0) {
+                        EstimatedWeaponLocalDirectionsAndLengths.Add(itemHash, weaponDirectionAndLength);
+                        DistancesBehindGripAndRearEnd.Add(itemHash, distanceBetweenGripAndRearEnd);
+                        LogUtils.LogDebug("Registered item " + itemHash + " local pointing direction and length: " + weaponDirectionAndLength + " distance between rear end and grip: " + distanceBetweenGripAndRearEnd);
+                    }
+                    else if (!isLocal)
+                    {
+                        // TODO: use EquipScript.GetEquipTypeFromHash() instead of just remove this if weapon wield will only be used locally in the future
+                        equipType = WeaponUtils.GuesstEquipTypeFromShape(weaponLength, distanceBetweenGripAndRearEnd, isDominantHandWeapon);
+                    }
                 }
-
-                //Atgeir Rotation fix
-                switch (attack.m_attackAnimation)
-                {
-                    case "atgeir_attack":
-                        transform.localRotation = transform.localRotation * Quaternion.AngleAxis(-20, Vector3.up) * Quaternion.AngleAxis(-7, Vector3.right);
-                        break;
-                }
-                weaponForward = transform.forward;
-                weaponSubPos = true;
             }
-            else if (SteamVR_Actions.valheim_Grab.GetStateUp(SteamVR_Input_Sources.LeftHand) || 
-                     SteamVR_Actions.valheim_Grab.GetStateUp(SteamVR_Input_Sources.RightHand)||
-                     (isSpear() && (SpearManager.IsAiming() || SpearManager.isThrowing)))
+
+            geometryProvider = GetGeometryProvider(longestLocalExtrusion, distanceBetweenGripAndRearEnd, twoHandedStateProvider);
+
+            var weaponPointing = GetWeaponPointingDirection();
+            offsetFromPointingDir =
+                Quaternion.Inverse(Quaternion.LookRotation(weaponPointing, transform.up)) * transform.rotation;
+
+            transform.position = geometryProvider.GetDesiredSingleHandedPosition(this);
+            transform.rotation = geometryProvider.GetDesiredSingleHandedRotation(this);
+
+            return this;
+        }
+
+        public bool ShouldUseLongGrip()
+        {
+            return currentTwoHandedWieldStartedWithLongGrip;
+        }
+
+        public Quaternion getAimingRotation(Vector3 pointing, Vector3 upDirection)
+        {
+            return Quaternion.LookRotation(pointing, upDirection) * offsetFromPointingDir;
+        }
+
+        protected Vector3 GetWeaponPointingDirection()
+        {
+            return geometryProvider.GetWeaponPointingDirection(transform, transform.TransformDirection(longestLocalExtrusion));
+        }
+
+        protected static Vector3 getHandCenter(Transform hand)
+        {
+            return hand.transform.position - hand.transform.forward * HAND_CENTER_OFFSET;
+        }
+
+        protected virtual void OnDestroy()
+        {
+            Destroy(originalTransform.gameObject);
+        }
+
+        // The frame UpdateTwoHandedWield() last ran in the render phase, see RenderPhase.
+        private int lastWieldRenderFrame = -1;
+
+        // Whether UpdateTwoHandedWield() runs once per frame (RenderPhase) rather than after every camera render.
+        // Only the local player's weapon: a remote player's weapon is also posed by ClientWeaponSync.OnRenderObject,
+        // in an order between the two scripts that Unity does not fix, so it keeps running after every render.
+        protected virtual bool WieldsOncePerFrame { get { return false; } }
+
+        protected virtual void OnRenderObject()
+        {
+            if (WieldsOncePerFrame && !RenderPhase.ShouldRun(ref lastWieldRenderFrame))
             {
-                _isTwoHanded = isTwoHanded.SingleHanded;
-                weaponSubPos = false;
-                ResetOffset();
+                return;
             }
-        }
-        private bool isSpear()
-        {
-            return EquipScript.getRight() == EquipType.Spear || EquipScript.getRight() == EquipType.SpearChitin;
-        }
-        private void ResetOffset()
-        {
-            VrikCreator.rightHandConnector.localRotation = Quaternion.identity;
-            VrikCreator.leftHandConnector.localRotation = Quaternion.identity;
-            transform.position = rotSave.transform.position;
-            transform.localRotation = rotSave.transform.localRotation;
+            UpdateTwoHandedWield();
         }
 
-        private float GetHandAngleDiff(Transform mainHand, Transform refHand)
+        // Updates weapon position and rotation and returns the new direction that the weapon is pointing toward.
+        protected virtual Vector3 UpdateTwoHandedWield()
         {
-            Vector3 localHandWieldDirection = (attack.m_attackAnimation == "spear_poke") ? new Vector3(0, 0.45f, 0.55f) : Vector3.forward;
-            return Vector3.Dot(localHandWieldDirection, mainHand.InverseTransformPoint(refHand.position).normalized);
-        }
+            bool wasTwoHanded = twoHandedState != TwoHandedState.SingleHanded;
 
-        public static bool isCurrentlyTwoHanded()
-        {
-            return _isTwoHanded != isTwoHanded.SingleHanded;
-        }
-        public bool allowBlocking()
-        {
-            switch (attack.m_attackAnimation)
+            twoHandedState = GetDesiredTwoHandedState(wasTwoHanded);
+
+            if (twoHandedState == TwoHandedState.SingleHanded)
             {
-                case "knife_stab":
-                    return weaponSubPos;
-                default:
-                    return isCurrentlyTwoHanded();
+                transform.SetPositionAndRotation(
+                    geometryProvider.GetDesiredSingleHandedPosition(this), geometryProvider.GetDesiredSingleHandedRotation(this));
+                return GetWeaponPointingDirection();
             }
+
+            rearHandTransform = twoHandedState == TwoHandedState.LeftHandBehind ? GetLeftHandTransform() : GetRightHandTransform();
+            frontHandTransform = twoHandedState == TwoHandedState.LeftHandBehind ? GetRightHandTransform() : GetLeftHandTransform();
+            Vector3 frontHandCenter = getHandCenter(frontHandTransform);
+            Vector3 rearHandCenter = getHandCenter(rearHandTransform);
+            Vector3 weaponPointingDir = (frontHandCenter - rearHandCenter).normalized;
+
+            if (!wasTwoHanded)
+            {
+                bool isMainHandBehind =
+                    IsPlayerLeftHanded() ^ isDominantHandWeapon ?
+                    twoHandedState == TwoHandedState.RightHandBehind :
+                    twoHandedState == TwoHandedState.LeftHandBehind;
+                Transform offHand = isMainHandBehind ? frontHandTransform : rearHandTransform;
+                currentTwoHandedWieldStartedWithLongGrip =
+                    isMainHandBehind ?
+                    Vector3.Dot(frontHandTransform.forward, rearHandTransform.forward) > 0 && Vector3.Distance(frontHandCenter, rearHandCenter) < 0.375f :
+                    Vector3.Dot(offHand.forward, weaponPointingDir) < 0 || Vector3.Distance(frontHandCenter, rearHandCenter) > 0.375f;
+            }
+
+            //weapon pos&rotation
+            transform.position =
+                rearHandCenter +
+                weaponPointingDir * (HAND_CENTER_OFFSET + geometryProvider.GetPreferredOffsetFromRearHand(
+                    Vector3.Distance(frontHandCenter, rearHandCenter), IsPlayerLeftHanded() == (twoHandedState == TwoHandedState.LeftHandBehind)));
+            transform.rotation = 
+                getAimingRotation(weaponPointingDir, geometryProvider.GetPreferredTwoHandedWeaponUp(this));
+            playerSync?.UpdateWeaponTransform(transform.position, transform.rotation);
+            return weaponPointingDir;
         }
+
+        protected abstract bool IsPlayerLeftHanded();
+        protected abstract Transform GetLeftHandTransform();
+        protected abstract Transform GetRightHandTransform();
+        protected abstract TwoHandedState GetDesiredTwoHandedState(bool wasTwoHanded);
+
+        private TwoHandedGeometryProvider GetGeometryProvider
+            (Vector3 longestLocalExtrusion, float distanceBetweenGripAndRearEnd, WeaponWieldSync.TwoHandedStateProvider twoHandedStateProvider)
+        {
+            if (isDundr)
+            {
+                return new TwoHandedGeometry.DundrGeometryProvider();
+            }
+
+            switch (equipType)
+            {
+                case EquipType.Axe:
+                case EquipType.Pickaxe:
+                case EquipType.Shovel:
+                    return new TwoHandedGeometry.DefaultGeometryProvider(distanceBetweenGripAndRearEnd * 0.5f);
+                case EquipType.Club:
+                case EquipType.Cultivator:
+                case EquipType.Fishing:
+                case EquipType.Hoe:
+                case EquipType.Torch:
+                    return new TwoHandedGeometry.DefaultGeometryProvider(distanceBetweenGripAndRearEnd: 0);
+                case EquipType.BattleAxe:
+                    return isLocal ? 
+                        new TwoHandedGeometry.LocalBattleaxeGeometryProvider(distanceBetweenGripAndRearEnd * 0.3f, this) :
+                        new TwoHandedGeometry.BattleaxeGeometryProvider(distanceBetweenGripAndRearEnd * 0.3f, this);
+                case EquipType.Crossbow:
+                    return isLocal ?
+                        new TwoHandedGeometry.LocalCrossbowGeometryProvider() :
+                        new TwoHandedGeometry.CrossbowGeometryProvider(IsPlayerLeftHanded());
+                case EquipType.Knife:
+                    if (isLocal)
+                    {
+                        return new TwoHandedGeometry.LocalKnifeGeometryProvider(distanceBetweenGripAndRearEnd);
+                    }
+                    break;
+                case EquipType.Magic:
+                    if (isDominantHandWeapon)
+                    {
+                        return new TwoHandedGeometry.StaffGeometryProvider(distanceBetweenGripAndRearEnd);
+                    }
+                    break;
+                case EquipType.Polearms:
+                    return isLocal ?
+                        new TwoHandedGeometry.LocalAtgeirGeometryProvider(distanceBetweenGripAndRearEnd, this) :
+                        new TwoHandedGeometry.AtgeirGeometryProvider(distanceBetweenGripAndRearEnd, this);
+                case EquipType.Scythe:
+                    return new TwoHandedGeometry.ScytheGeometryProvider(IsPlayerLeftHanded(), distanceBetweenGripAndRearEnd);
+                case EquipType.Sledge:
+                    return isLocal ?
+                        new TwoHandedGeometry.LocalSledgeGeometryProvider(distanceBetweenGripAndRearEnd) :
+                        new TwoHandedGeometry.SledgeGeometryProvider(distanceBetweenGripAndRearEnd);
+                case EquipType.Sword:
+                    if (isLocal)
+                    {
+                        return new TwoHandedGeometry.LocalSwordGeometryProvider(Mathf.Max(distanceBetweenGripAndRearEnd * 0.75f, 0.125f));
+                    }
+                    break;
+                case EquipType.Spear:
+                case EquipType.SpearChitin:
+                    if (isLocal)
+                    {
+                        return new TwoHandedGeometry.LocalSpearGeometryProvider(this);
+                    }
+                    else if (twoHandedStateProvider != null)
+                    {
+                        return new TwoHandedGeometry.RemoteSpearGeometryProvider(twoHandedStateProvider, this);
+                    }
+                    break;
+            }
+
+            if (!isLocal && twoHandedStateProvider != null)
+            {
+                return new TwoHandedGeometry.RemoteGeometryProvider(distanceBetweenGripAndRearEnd, twoHandedStateProvider);
+            }
+            
+            return new TwoHandedGeometry.DefaultGeometryProvider(distanceBetweenGripAndRearEnd);
+        }
+
+        public interface TwoHandedGeometryProvider {
+            // Returns the direction the weapon is pointing.
+            Vector3 GetWeaponPointingDirection(Transform weaponTransform, Vector3 longestExtrusion);
+            Vector3 GetDesiredSingleHandedPosition(WeaponWield weaponWield);
+            Quaternion GetDesiredSingleHandedRotation(WeaponWield weaponWield);
+            // The preferred up direction used to determine the weapon's rotation around it longitudinal axis during two-handed wield.
+            Vector3 GetPreferredTwoHandedWeaponUp(WeaponWield weaponWield);
+            // The preferred forward offset amount of the weapon's position from the rear hand during two-handed wield.
+            float GetPreferredOffsetFromRearHand(float handDist, bool rearHandIsDominant);
+            bool InverseHoldForDominantHand();
+            bool ShouldRotateHandForOneHandedWield();
+        }
+
+        public interface LongGripStateProvider {
+            bool ShouldUseLongGrip();
+        }
+
     }
 }

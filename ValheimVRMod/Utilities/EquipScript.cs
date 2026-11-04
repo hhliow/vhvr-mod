@@ -1,21 +1,115 @@
 using System;
+using System.Collections.Generic;
+using ValheimVRMod.Scripts;
 
-namespace ValheimVRMod.Utilities {
-    
+namespace ValheimVRMod.Utilities
+{
+
     [Flags]
-    public enum EquipType {
-        None, 
-        Fishing, Cultivator, Hammer, Hoe,
-        Bow,  Spear, SpearChitin, ThrowObject,
-        Shield, Tankard, Claws
+    public enum EquipType
+    {
+        None,
+        Fishing, Cultivator, Hammer, Hoe, Torch, Scythe, Tray, Shovel,
+        Bow, Spear, SpearChitin, ThrowObject,
+        Shield, Tankard, Claws, Magic, Crossbow
+        ,
+        //Melee Weapon
+        Axe, BattleAxe, Club, DualKnives, DualAxes, Knife, Pickaxe, Polearms, Sledge, Sword
+        ,
+        //utility
+        Lantern
+        ,
+        //Modded
+        RuneSkyheim
     }
-    
-    public static class EquipScript {
-        
-        public static EquipType getRight() {
-            
-            switch (Player.m_localPlayer.GetRightItem()?.m_shared.m_name) {
-                
+
+    public static class EquipScript
+    {
+        private const string GRAPPLING_HOOK_NAME = "$item_graplinghook";
+
+        public readonly static HashSet<ItemDrop.ItemData.ItemType> MainHandItemTypes =
+            new HashSet<ItemDrop.ItemData.ItemType>(
+                new ItemDrop.ItemData.ItemType[]{
+                    ItemDrop.ItemData.ItemType.Tool,
+                    ItemDrop.ItemData.ItemType.Torch,
+                    ItemDrop.ItemData.ItemType.OneHandedWeapon,
+                    ItemDrop.ItemData.ItemType.TwoHandedWeapon});
+
+        public static bool CanUseAsMainHandItem(ItemDrop.ItemData item)
+        {
+            return MainHandItemTypes.Contains(item.m_shared.m_itemType);
+        }
+
+        public static EquipType CurrentMainHandEquipType()
+        {
+            if (Player.m_localPlayer?.GetRightItem() != null)
+            {
+                return GetEquipTypeAsMainHandItem(Player.m_localPlayer.GetRightItem());
+            }
+            return EquipType.None;
+        }
+
+        public static EquipType CurrentOffHandEquipType()
+        {
+            if (Player.m_localPlayer?.GetLeftItem() != null)
+            {
+                return GetEquipTypeAsOffHandItem(Player.m_localPlayer.GetLeftItem());
+            }
+            return EquipType.None;
+        }
+
+        public static EquipType GetEquipTypeFromHash(int hash)
+        {
+            return EquipScript.GetEquipType(GetItem(hash));
+        }
+
+        public static string GetItemName(int hash)
+        {
+            return GetItem(hash)?.m_shared?.m_name;
+        }
+
+        public static EquipType GetEquipType(ItemDrop.ItemData item)
+        {
+            if (item == null || item.m_shared ==  null) {
+                return EquipType.None;
+            }
+
+            switch (item.m_shared.m_itemType)
+            {
+                case ItemDrop.ItemData.ItemType.Shield:
+                    return EquipType.Shield;
+                case ItemDrop.ItemData.ItemType.Torch: // Need examine further to distinguish between torch and lantern
+                case ItemDrop.ItemData.ItemType.Bow: // Need examine further to distinguish between bow and crossbow
+                case ItemDrop.ItemData.ItemType.OneHandedWeapon:
+                case ItemDrop.ItemData.ItemType.Tool:
+                case ItemDrop.ItemData.ItemType.TwoHandedWeapon:
+                case ItemDrop.ItemData.ItemType.TwoHandedWeaponLeft:
+                    var typeAsMainHandItem = GetEquipTypeAsMainHandItem(item);
+                    return typeAsMainHandItem != EquipType.None ? typeAsMainHandItem : GetEquipTypeAsOffHandItem(item);
+                default:
+                    return EquipType.None;
+            }
+        }
+
+        public static EquipType GetEquipTypeAsMainHandItem(ItemDrop.ItemData item)
+        {
+            if (item?.m_shared?.m_attack?.m_harvest?? false)
+            {
+                return EquipType.Scythe;
+            }
+
+            var attackAnim = item?.m_shared.m_attack.m_attackAnimation;
+            switch (attackAnim)
+            {
+                case "dual_knives":
+                    return EquipType.DualKnives;
+                case "dualaxes":
+                    return EquipType.DualAxes;
+            }
+
+            //Right Equipment List
+            switch (item?.m_shared.m_name)
+            {
                 //tool
                 case "$item_fishingrod":
                     return EquipType.Fishing;
@@ -25,36 +119,288 @@ namespace ValheimVRMod.Utilities {
                     return EquipType.Hammer;
                 case "$item_hoe":
                     return EquipType.Hoe;
+                case "$item_snowshovel":
+                    return EquipType.Shovel;
+                case "$item_feaster":
+                    return EquipType.Tray;
 
                 case "$item_spear_flint":
                 case "$item_spear_bronze":
                 case "$item_spear_ancientbark":
                 case "$item_spear_wolffang":
+                case "$item_spear_carapace":
                     return EquipType.Spear;
                 case "$item_spear_chitin":
                     return EquipType.SpearChitin;
                 case "$item_oozebomb":
+                case "$item_bilebomb":
+                case "$item_snowball":
+                // "Ember Charge" in English.
+                case "$item_bomb_dynamite":
                     return EquipType.ThrowObject;
                 case "$item_tankard":
-                    return EquipType.Tankard;                
+                case "$item_dvergrtankard":
+                case "$item_tankard_anniversary":
+                case "$item_tankard_odin":
+                    return EquipType.Tankard;
                 case "$item_fistweapon_fenris":
                     return EquipType.Claws;
+                case "$item_lantern":
+                // "Salvaged Lantern" in English.
+                case "$item_lanternDN":
+                    return EquipType.Lantern;
+                //modded
+                case "Rune of Frostbolt":
+                case "Rune of Firebolt":
+                case "Rune of Healing":
+                case "Rune of Light":
+                case "Rune of Force":
+                case "Rune of Invigorate":
+                case "Rune of Warmth":
+                case "Rune of Recall":
+                case "Rune of Travel":
+                case "Rune of Blink":
+                case "Rune of Frost Nova":
+                case "Rune of Immolation":
+                case "Rune of Chain Lightning":
+                case "Rune of Glacial Spike":
+                    return EquipType.RuneSkyheim;
+            }
+
+            switch (item?.m_shared.m_itemType)
+            {
+                case ItemDrop.ItemData.ItemType.Torch:
+                    return EquipType.Torch;
+            }
+
+            //compatibility setting 
+            var skillType = item?.m_shared.m_skillType;
+            switch (skillType)
+            {
+                //Right Equipment
+                case Skills.SkillType.Unarmed:
+                    return EquipType.Claws;
+                case Skills.SkillType.Spears:
+                    return EquipType.Spear;
+                case Skills.SkillType.BloodMagic:
+                case Skills.SkillType.ElementalMagic:
+                    return EquipType.Magic;
+                case Skills.SkillType.Swords:
+                    return EquipType.Sword;
+                case Skills.SkillType.Axes:
+                    return item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.TwoHandedWeapon ? EquipType.BattleAxe : EquipType.Axe;
+                case Skills.SkillType.Pickaxes:
+                    return EquipType.Pickaxe;
+                case Skills.SkillType.Clubs:
+                    return item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.TwoHandedWeapon ? EquipType.Sledge : EquipType.Club;
+                case Skills.SkillType.Polearms:
+                    return EquipType.Polearms;
+            }
+
+            switch (attackAnim)
+            {
+                case "unarmed_attack":
+                    return EquipType.Claws;
+                case "throw_bomb":
+                    return EquipType.ThrowObject;
+                case "knife_stab":
+                    return EquipType.Knife;
+                case "swing_hammer":
+                    return EquipType.Hammer;
+                case "emote_drink":
+                    return EquipType.Tankard;
+                case "staff_fireball":
+                case "staff_lightningshot":
+                case "staff_thrust":
+                case "staff_thunder":
+                    return EquipType.Magic;
             }
 
             return EquipType.None;
         }
 
-        public static EquipType getLeft() {
+        public static EquipType GetEquipTypeAsOffHandItem(ItemDrop.ItemData item)
+        {
+            switch (item?.m_shared.m_name)
+            {
+                case "$item_lantern":
+                // "Salvaged Lantern" in English.
+                case "$item_lanternDN":
+                    return EquipType.Lantern;
+                // Held and fired like a crossbow, whatever ammo type it uses.
+                case GRAPPLING_HOOK_NAME:
+                    return EquipType.Crossbow;
+            }
 
-            switch (Player.m_localPlayer.GetLeftItem()?.m_shared.m_itemType) {
+            //LeftEquipment List
+            switch (item?.m_shared.m_itemType)
+            {
                 case ItemDrop.ItemData.ItemType.Bow:
+                    if (item?.m_shared.m_ammoType == "$ammo_bolts")
+                        return EquipType.Crossbow;
                     return EquipType.Bow;
-
                 case ItemDrop.ItemData.ItemType.Shield:
                     return EquipType.Shield;
+                case ItemDrop.ItemData.ItemType.Torch:
+                    return EquipType.Torch;
             }
-            
+
+            //compatibility setting 
+            var skillType = item?.m_shared.m_skillType;
+            //var itemType = item?.m_shared.m_itemType;
+            switch (skillType)
+            {
+                case Skills.SkillType.BloodMagic:
+                case Skills.SkillType.ElementalMagic:
+                    return EquipType.Magic;
+
+                //Left Equipments
+                case Skills.SkillType.Bows:
+                    return EquipType.Bow;
+                case Skills.SkillType.Crossbows:
+                    return EquipType.Crossbow;
+            }
+
+
+            if (item?.m_shared.m_attack.m_attackAnimation == "knife_stab")
+            {
+                return EquipType.Knife;
+            }
+
             return EquipType.None;
+        }
+
+        public static bool LocalPlayerHasDualWieldingWeaponHolstered()
+        {
+            var localPlayer = Player.m_localPlayer;
+            if (localPlayer == null)
+            {
+                return false;
+            }
+            var hiddenItem = localPlayer.m_hiddenRightItem;
+            return hiddenItem != null && IsDualWeapon(hiddenItem);
+        }
+
+        public static bool IsDualWeapon(ItemDrop.ItemData item)
+        {
+            var weaponType = GetEquipTypeAsMainHandItem(item);
+            switch (weaponType)
+            {
+                case EquipType.Claws:
+                case EquipType.DualAxes:
+                case EquipType.DualKnives:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        public static bool IsCompatibleWithParryingKnife()
+        {
+            switch (CurrentMainHandEquipType())
+            {
+                case EquipType.Axe:
+                case EquipType.Club:
+                case EquipType.Knife:
+                case EquipType.Sword:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        public static ItemDrop.ItemData EquipAmmo()
+        {
+            if (CurrentOffHandEquipType() != EquipType.Bow && CurrentOffHandEquipType() != EquipType.Crossbow)
+            {
+                LogUtils.LogWarning("Attempting to equip ammo without bow or crossbow equipped");
+                return null;
+            }
+                
+            ItemDrop.ItemData weapon = Player.m_localPlayer.GetLeftItem();
+            if (Attack.HaveAmmo(Player.m_localPlayer, weapon))
+            {
+                Attack.EquipAmmoItem(Player.m_localPlayer, weapon);
+                return Player.m_localPlayer.GetAmmoItem();
+            }
+
+            return null;
+        }
+
+        public static bool IsThrowable(ItemDrop.ItemData item)
+        {
+            if (item != null)
+            {
+                string getValue = "";
+                if (item.m_customData.TryGetValue("randyknapp.mods.epicloot#EpicLoot.MagicItemComponent", out getValue))
+                {
+                    return getValue.Contains("Throwable");
+                }
+                return item.m_crafterName.Contains("\"EffectType\":\"Throwable\"");
+            }
+            return false;
+        }
+
+        public static bool IsSpearEquipped()
+        {
+            return CurrentMainHandEquipType() == EquipType.Spear || CurrentMainHandEquipType() == EquipType.SpearChitin;
+        }
+
+        // Whether the main hand holds something thrown by hand (see ThrowableManager).
+        public static bool IsHandThrownWeaponEquipped()
+        {
+            return IsSpearEquipped() || CurrentMainHandEquipType() == EquipType.ThrowObject || IsThrowable(Player.m_localPlayer?.GetRightItem());
+        }
+
+        public static bool IsDundrEquipped()
+        {
+            return IsDundr(Player.m_localPlayer?.GetRightItem());
+        }
+
+        public static bool IsDundr(int hash)
+        {
+            return IsDundr(GetItem(hash));
+        }
+
+        public static bool IsDundr(ItemDrop.ItemData item)
+        {
+            return item?.m_shared?.m_name == "$item_staff_lightning";
+        }
+
+        public static bool IsGrapplingHook(ItemDrop.ItemData item)
+        {
+            return item?.m_shared?.m_name == GRAPPLING_HOOK_NAME;
+        }
+
+        public static bool ShouldSkipAttackAnimation()
+        {
+            if (OrbManager.instance != null)
+            {
+                // These staves are cast with the trigger rather than a gesture, so their animation plays in full.
+                return false;
+            }
+            if (CurrentOffHandEquipType() == EquipType.Magic || CurrentMainHandEquipType() == EquipType.Magic)
+            {
+                return SwingableStaffManager.instance != null && SwingableStaffManager.instance.UseSwingForCurrentAttack();
+            }
+            return CurrentOffHandEquipType() != EquipType.Crossbow;
+        }
+
+        public static bool IsMeleeMagicAttack(Attack attack, EquipType type)
+        {
+            // RTD Healing staff (modded) is using attack type of horizontal, while the other use projectile
+            return attack.m_attackType == Attack.AttackType.Horizontal && type == EquipType.Magic;
+        }
+
+        private static ItemDrop.ItemData GetItem(int hash)
+        {
+            var obj = ObjectDB.instance.GetItemPrefab(hash);
+            if (obj == null)
+            {
+                return null;
+            }
+            var itemDrop = obj.GetComponentInChildren<ItemDrop>();
+            return itemDrop == null ? null : itemDrop.m_itemData;
         }
     }
 }

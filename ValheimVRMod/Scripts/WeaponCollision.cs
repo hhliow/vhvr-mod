@@ -1,333 +1,935 @@
 using System.Collections.Generic;
+using ValheimVRMod.VRCore.Backends;
 using System.ComponentModel;
-using System.Linq;
 using UnityEngine;
 using ValheimVRMod.Utilities;
 using ValheimVRMod.VRCore;
-using Valve.VR;
 
-namespace ValheimVRMod.Scripts {
-    public class WeaponCollision : MonoBehaviour {
-        private const float MIN_DISTANCE = 0.2f;
-        private const float MIN_DISTANCE_STAB = 0.25f;
-        private const float MIN_DISTANCE_STAB_TWOHAND = 0.22f;
-        private const int MAX_SNAPSHOTS_BASE = 20;
-        private const int MAX_SNAPSHOTS_FACTOR = -5;
-        private const float MAX_STAB_ANGLE = 20f;
-        private const float MAX_STAB_ANGLE_TWOHAND = 40f;
+namespace ValheimVRMod.Scripts
+{
+    public class WeaponCollision : MonoBehaviour
+    {
+        // The speed along the weapon that shows that it is still going in at the time of contact. Whether the
+        // movement is a stab at all is judged by the thrust leading up to it.
+        private const float MIN_STAB_SPEED = 2f;
+        // How far along the weapon the hand has to have moved within STAB_THRUST_DURATION for a stab.
+        private const float MIN_STAB_THRUST = 0.2f;
+        // Short, so that movement from before the thrust is left out.
+        private const float STAB_THRUST_DURATION = 0.25f;
+        private const float MIN_HAMMER_SPEED = 1;
+        private const float MIN_LONG_TOOL_SPEED = 1.5f;
+        // The offset amount of the point on the weapon relative to the hand to calculate the speed of.
+        // This is intentionally made much smaller than the possible full length of the weapon so that
+        // small wrist rotation will not acccidentally trigger an attack when holding a long weapon.
+        private const float WEAPON_ANGULAR_WEIGHT_OFFSET = 0.125f;
+        private const string MOUTH_COLLIDER_NAME = "MouthCollider";
+        private const string LIGHTNING_STRIKE_STAFF_NAME = "$item_staff_thunderblood";
 
         private bool scriptActive;
-        private GameObject colliderParent = new GameObject();
-        private List<Vector3> snapshots = new List<Vector3>();
-        private List<Vector3> snapshotsC = new List<Vector3>();
+        private GameObject colliderParent;
         private ItemDrop.ItemData item;
         private Attack attack;
-        private bool isRightHand;
+        private Attack secondaryAttack;
+        private bool isVanillaRightHandedWeapon;
         private Outline outline;
-        private float hitTime;
-        private bool hasDrunk;
+        private bool readyToDrink;
+        private float postSlowAttackCountdown;
+        private float twoHandedMultitargetSwipeCountdown = 0;
+        private float twoHandedMultitargetSwipeDuration;
+        private GameObject debugColliderIndicator;
+        private readonly StabStick stabStick = new StabStick();
+        // Whether hitting things with the held item is a fist attack, for items that have no melee attack of their own.
+        private bool usesUnarmedAttack;
+        // Whether stabbing with the held item is an attack with the item itself even though it uses fist attacks.
+        private bool stabsWithHeldItem;
 
-        public bool itemIsTool;
+        // The pose the box had when it was last placed, for sweeping the gap to this frame's pose, see sweepFromLastPose().
+        private bool hasLastPose;
+        private Vector3 lastPosition;
+        private Quaternion lastRotation;
+        private float lastPoseTime;
+        private int lastSweepFrame = -1;
+        // What the box was last placed from and where it was put, see OnRenderObject(): while none of it has changed,
+        // placing it again would give the same pose.
+        private bool hasPlacedPose;
+        private Matrix4x4 placedFromColliderParent;
+        private Matrix4x4 placedUnderPlayer;
+        private Transform placedPlayerTransform;
+        private Vector3 placedLocalPosition;
+        private Quaternion placedLocalRotation;
+        private Vector3 placedLocalScale;
+        // Everything the box can be entered by, i.e. all but the mod's own weapon, hand and UI layers.
+        private const int SWEEP_LAYER_MASK =
+            ~((1 << LayerUtils.VHVR_WEAPON) | LayerUtils.HANDS_LAYER_MASK | LayerUtils.UI_PANEL_LAYER_MASK | LayerUtils.WORLDSPACE_UI_LAYER_MASK);
+        // A gap longer than this is not a hitch during a swing but a break (menu, cutscene), and a move longer than
+        // this is not a swing but the player being moved.
+        private const float MAX_SWEEP_GAP_SECONDS = 0.5f;
+        private const float MAX_SWEEP_DISTANCE = 3f;
+        private const float MIN_SWEEP_STEP = 0.02f;
+        private static readonly Collider[] sweepHits = new Collider[32];
+        private static readonly HashSet<Collider> sweptColliders = new HashSet<Collider>();
+        private bool isHoldingTankard { get { return isVanillaRightHandedWeapon && EquipScript.CurrentMainHandEquipType() == EquipType.Tankard; } }
+
+        public PhysicsEstimator physicsEstimator { get; private set; }
+        public PhysicsEstimator mainHandPhysicsEstimator { get { return weaponWield.mainHand == VRPlayer.leftHand ? VRPlayer.leftHandPhysicsEstimator : VRPlayer.rightHandPhysicsEstimator; } }
+        private bool itemIsTool;
+        public static bool hasPendingToolUsageOutput;
         public static bool isDrinking;
-        
-        private int maxSnapshots;
-        private float colliderDistance;
+        public LocalWeaponWield weaponWield;
+        public static bool isLastHitOnTerrain;
+        public bool isTwoHandedMultitargetSwipeActive { get { return twoHandedMultitargetSwipeCountdown > twoHandedMultitargetSwipeDuration * 0.5f; } }
 
-        private static readonly int[] ignoreLayers = {
-            LayerUtils.WATERVOLUME_LAYER,
-            LayerUtils.WATER,
-            LayerUtils.UI_PANEL_LAYER,
-            LayerUtils.CHARARCTER_TRIGGER
-        };
+        private void Awake()
+        {
+            colliderParent = new GameObject();
+            physicsEstimator = gameObject.AddComponent<PhysicsEstimator>();
+            physicsEstimator.refTransform = CameraUtils.getCamera(CameraUtils.VR_CAMERA)?.transform.parent;
 
-        private void OnTriggerStay(Collider collider) {
-
-            if (!isCollisionAllowed()) {
-                return;
-            }
-
-            if (!isRightHand || EquipScript.getRight() != EquipType.Tankard || collider.name != "MouthCollider" || hasDrunk) {
-                return;
-            }
-
-            var mainHand = VHVRConfig.LeftHanded() ? VRPlayer.leftHand : VRPlayer.rightHand;
-            
-            isDrinking = hasDrunk = 
-                mainHand.transform.rotation.eulerAngles.x > 0 
-                && mainHand.transform.rotation.eulerAngles.x < 90;
-
-            //bHaptics
-            if (isDrinking && !BhapticsTactsuit.suitDisabled)
+            if (VHVRConfig.ShowDebugColliders())
             {
-                BhapticsTactsuit.PlaybackHaptics("Drinking");
+                debugColliderIndicator = WeaponUtils.CreateDebugBox(transform);
             }
+        }
 
+        void Destroy()
+        {
+            Destroy(colliderParent);
+            if (debugColliderIndicator != null) Destroy(debugColliderIndicator);
         }
 
         private void OnTriggerEnter(Collider collider)
         {
-            if (!isCollisionAllowed()) {
-                return;
-            }
-            
-            if (isRightHand && EquipScript.getRight() == EquipType.Tankard) {
-                if (collider.name == "MouthCollider" && hasDrunk) {
-                    hasDrunk = false;
-                }
-                
-                return;
-            }
-
-            var maybePlayer = collider.GetComponentInParent<Player>();
-
-            if (maybePlayer != null && maybePlayer == Player.m_localPlayer) {
-                return;
-            }
-
-            if (item == null && !itemIsTool || !hasMomentum()) {
-                return;
-            }
-
-            if (!tryHitTarget(collider.gameObject)) {
-                return;
-            }
-            
-            StaticObjects.lastHitPoint = transform.position;
-            StaticObjects.lastHitDir = snapshots[snapshots.Count - 1] - snapshots[snapshots.Count - 5];
-            StaticObjects.lastHitCollider = collider;
-            
-            if (attack.Start(Player.m_localPlayer, null, null,
-                Player.m_localPlayer.m_animEvent,
-                null, item, null, 0.0f, 0.0f))
+            if (!isCollisionAllowed())
             {
-                if (isRightHand) {
-                    VRPlayer.rightHand.hapticAction.Execute(0, 0.2f, 100, 0.5f, SteamVR_Input_Sources.RightHand);
+                return;
+            }
+
+            if (isHoldingTankard)
+            {
+                if (collider.name == MOUTH_COLLIDER_NAME)
+                {
+                    readyToDrink = true;
                 }
-                else {
-                    VRPlayer.leftHand.hapticAction.Execute(0, 0.2f, 100, 0.5f, SteamVR_Input_Sources.LeftHand);
+                return;
+            }
+
+            if (VHVRConfig.ShowDebugColliders())
+            {
+                if (debugColliderIndicator == null)
+                {
+                    WeaponUtils.CreateDebugBox(transform);
                 }
-                //bHaptics
+            }
+            else if (debugColliderIndicator != null)
+            {
+                Destroy(debugColliderIndicator);
+            }
+
+            MaybeAttackCollider(collider, requireStab: false, requireStabOrBackSlash: false);
+        }
+
+        private void OnTriggerStay(Collider collider)
+        {
+            if (!isCollisionAllowed())
+            {
+                return;
+            }
+
+            if (isHoldingTankard) {
+                CheckDrinking(collider);
+                return;
+            }
+
+            if (EquipScript.CurrentMainHandEquipType() == EquipType.Shovel)
+            {
+                // When scooping from the ground the blade is usually already buried by the time the upward scoop
+                // starts, so entering the terrain alone would rarely coincide with the required upward motion.
+                // Anything else only collides on enter like a regular weapon.
+                if (isTerrain(collider.gameObject))
+                {
+                    MaybeAttackCollider(collider, requireStab: false, requireStabOrBackSlash: false);
+                }
+                return;
+            }
+
+            if (itemIsTool)
+            {
+                switch (EquipScript.CurrentMainHandEquipType())
+                {
+                    case EquipType.Cultivator:
+                    case EquipType.Hoe:
+                        if (isTerrain(collider.gameObject))
+                        {
+                            MaybeAttackCollider(collider, requireStab: false, requireStabOrBackSlash: false);
+                        }
+                        return;
+                    case EquipType.Scythe:
+                        if ((LayerUtils.HARVEST_RAY_MASK & (1 << collider.gameObject.layer)) != 0)
+                        {
+                            MaybeAttackCollider(collider, requireStab: false, requireStabOrBackSlash: false);
+                        }
+                        return;
+                }
+                return;
+            }
+
+            // Allow triggering a stab on a character target after contact.
+            // This allows stabbing with long weapons that are likely to have been overlapping with the target before attacking. 
+            MaybeStabCharacter(collider);
+        }
+
+        // Whether the character is a training dummy (T.W.I.G.), which is there to practice fighting and so is hit like
+        // an enemy, whatever layer its colliders are on and even if it is flagged as tamed.
+        public static bool IsTrainingDummy(Character character)
+        {
+            return character != null && character.m_faction == Character.Faction.TrainingDummy;
+        }
+
+        public static bool IsFriendly(Character character)
+        {
+            if (IsTrainingDummy(character))
+            {
+                return false;
+            }
+
+            // IsTamed() and IsAggravated() rather than the m_tamed and m_aggravated fields: on a character owned by
+            // another client the fields are only refreshed from the ZDO by those accessors.
+            if (character.IsTamed() || character.gameObject == Player.m_localPlayer.gameObject)
+            {
+                return true;
+            }
+
+            if (character.IsPlayer())
+            {
+                return Player.m_localPlayer == null || !Player.m_localPlayer.m_pvp || !character.GetComponent<Player>().m_pvp;
+            }
+
+            return character.m_baseAI != null && !character.m_baseAI.IsAggravated() && character.m_faction == Character.Faction.Dverger;
+        }
+
+        private static bool IsHostileCharacter(Collider collider)
+        {
+            var character = collider.GetComponentInParent<Character>();
+            return character != null && !IsFriendly(character);
+        }
+
+        private bool CheckDrinking(Collider collider)
+        {
+            if (!isHoldingTankard || collider.name != MOUTH_COLLIDER_NAME || !readyToDrink)
+            {
+                return false;
+            }
+
+            isDrinking = weaponWield.mainHand.transform.rotation.eulerAngles.x > 0 && weaponWield.mainHand.transform.rotation.eulerAngles.x < 90;
+            if (!isDrinking)
+            {
+                return false;
+            }
+
+            readyToDrink = false;
+
+            if (!BhapticsTactsuit.suitDisabled)
+            {
+                BhapticsTactsuit.PlaybackHaptics("Drinking");
+            }
+
+            return true;
+        }
+
+        private void MaybeStabCharacter(Collider collider) {
+
+            if (collider.gameObject.layer != LayerUtils.CHARACTER)
+            {
+                return;
+            }
+
+            Character character = collider.GetComponentInParent<Character>();
+            if (character == null || IsFriendly(character))
+            {
+                return;
+            }
+
+            var cooldown = collider.GetComponent<AttackTargetMeshCooldown>();
+            if (cooldown != null && cooldown.inCoolDown())
+            {
+                return;
+            }
+
+            switch(EquipScript.CurrentMainHandEquipType())
+            {
+                case EquipType.BattleAxe:
+                case EquipType.Polearms:
+                    MaybeAttackCollider(collider, requireStab: false, requireStabOrBackSlash: true);
+                    return;
+                case EquipType.Spear:
+                case EquipType.Sword:
+                    MaybeAttackCollider(collider, requireStab: true, requireStabOrBackSlash: true);
+                    return;
+            }
+        }
+
+        private void MaybeAttackCollider(Collider collider, bool requireStab, bool requireStabOrBackSlash) {
+
+            if (collider.GetComponentInParent<Player>() == Player.m_localPlayer)
+            {
+                return;
+            }
+
+            if (item == null && !itemIsTool)
+            {
+                return;
+            }
+
+            bool isShovelScoop = EquipScript.CurrentMainHandEquipType() == EquipType.Shovel && isTerrain(collider.gameObject);
+            if (!hasMomentum(isShovelScoop, out bool isStab, out bool isBackSlash, out float speed))
+            {
+                return;
+            }
+
+            if (requireStab && !isStab)
+            {
+                return;
+            }
+
+            if (requireStabOrBackSlash && !isStab && !isBackSlash)
+            {
+                return;
+            }
+
+            if (EquipScript.CurrentMainHandEquipType() == EquipType.Shovel && !isTerrain(collider.gameObject))
+            {
+                // The shovel deals no damage of its own, so hitting anything but terrain with it falls back to a kick.
+                if (FootCollision.Kick(collider, transform.position, physicsEstimator.GetVelocity(), speed))
+                {
+                    VRPlayer.mainWeaponHand.hapticAction.Execute(0, 0.2f, 100, 0.5f, VRPlayer.mainWeaponHandInputSource);
+                }
+                return;
+            }
+
+            if (itemIsTool)
+            {
+                switch (EquipScript.CurrentMainHandEquipType())
+                {
+                    case EquipType.Cultivator:
+                    case EquipType.Hoe:
+                        hasPendingToolUsageOutput = LocalWeaponWield.isCurrentlyTwoHanded();
+                        return;
+                    case EquipType.Hammer:
+                        Piece hoveringPiece = Player.m_localPlayer.GetHoveringPiece();
+                        hasPendingToolUsageOutput =
+                            hoveringPiece != null &&
+                            Player.m_localPlayer.InRepairMode() &&
+                            collider.gameObject.layer == LayerUtils.PIECE &&
+                            (collider.GetComponent<Piece>() == hoveringPiece ||
+                             collider.GetComponentInParent<Piece>() == hoveringPiece);
+                        return;
+                    case EquipType.Scythe:
+                    case EquipType.Shovel:
+                        break;
+                    default:
+                        return;
+                }
+            }
+
+            bool weaponHasMultitargetSwipe = EquipScript.CurrentMainHandEquipType() == EquipType.BattleAxe || EquipScript.CurrentMainHandEquipType() == EquipType.Polearms;
+            bool isSlowAttack;
+            if (postSlowAttackCountdown <= 0)
+            {
+                isSlowAttack = RoomscaleSecondaryAttackUtils.IsSecondaryAttack(this.physicsEstimator, this.mainHandPhysicsEstimator);
+            }
+            else
+            {
+                // Allow continuing an ongoing atgeir or battleaxe multitarget swipe until swipe timer finishes.
+                isSlowAttack = weaponHasMultitargetSwipe && isTwoHandedMultitargetSwipeActive;
+            }
+
+            if (!tryHitTarget(collider.gameObject, isSlowAttack, speed))
+            {
+                return;
+            }
+
+            Attack currentAttack;
+            if (EquipScript.CurrentMainHandEquipType() == EquipType.BattleAxe)
+            {
+                currentAttack = !isSlowAttack && isStab ? secondaryAttack : attack;
+            }
+            else
+            {
+                currentAttack = isSlowAttack ? secondaryAttack : attack;
+            }
+
+            if (isSlowAttack && postSlowAttackCountdown <= 0)
+            {
+                postSlowAttackCountdown = WeaponUtils.GetAttackDuration(secondaryAttack);
+            }
+            if (weaponHasMultitargetSwipe && isSlowAttack && twoHandedMultitargetSwipeCountdown <= 0)
+            {
+                twoHandedMultitargetSwipeCountdown = twoHandedMultitargetSwipeDuration = WeaponUtils.GetAttackDuration(currentAttack);
+            }
+
+            StaticObjects.lastHitPoint = transform.position;
+            StaticObjects.lastHitDir = physicsEstimator.GetVelocity().normalized;
+            StaticObjects.lastHitCollider = collider;
+
+            // Attack.Start() clears the flag, so it has to be read beforehand.
+            bool isCooldownHit = AttackTargetMeshCooldown.isCooldownHit;
+
+            // A fist attack is made with the fists as the weapon, so that the held item contributes nothing to it. A
+            // stab with the harpoon is made with the harpoon instead, which harpoons the target like throwing it does.
+            var attackItem =
+                usesUnarmedAttack && !(isStab && stabsWithHeldItem) ? Player.m_localPlayer.m_unarmedWeapon.m_itemData : item;
+
+            if (currentAttack.Start(Player.m_localPlayer, null, null,
+                        Player.m_localPlayer.m_animEvent,
+                        null, attackItem, null, 0.0f, 0.0f))
+            {
+                if (isStab && !isCooldownHit && canStabStick())
+                {
+                    stabStick.TryStick(collider.GetComponentInParent<Character>(), transform.position);
+                }
+
+                if (isVanillaRightHandedWeapon)
+                {
+                    VRPlayer.mainWeaponHand.hapticAction.Execute(0, 0.2f, 100, 0.5f, VRPlayer.mainWeaponHandInputSource);
+                }
+                else
+                {
+                    VRPlayer.mainWeaponHand.otherHand.hapticAction.Execute(0, 0.2f, 100, 0.5f, VRPlayer.secondaryWeaponHandInputSource);
+                }
+                // bHaptics
                 if (!BhapticsTactsuit.suitDisabled)
                 {
-                    BhapticsTactsuit.SwordRecoil(!VHVRConfig.LeftHanded());
+                    BhapticsTactsuit.SwordRecoil(VRPlayer.isRightHandMainWeaponHand);
                 }
             }
         }
-        private bool tryHitTarget(GameObject target) {
 
+        private bool tryHitTarget(GameObject target, bool isSlowAttack, float speed)
+        {
             // ignore certain Layers
-            if (ignoreLayers.Contains(target.layer)) {
+            if (LayerUtils.IsNonAttackableLayer(target.layer))
+            {
                 return false;
             }
 
+            if (Player.m_localPlayer.m_blocking && !weaponWield.allowBlocking() && VHVRConfig.UseGrabButtonBlock())
+            {
+                return false;
+            }
+
+            if (Player.m_localPlayer.IsStaggering() || Player.m_localPlayer.InDodge())
+            {
+                return false;
+            }
+            if (ButtonSecondaryAttackManager.firstPos != Vector3.zero || ButtonSecondaryAttackManager.isSecondaryAttackStarted)
+            {
+                return false;
+            }
             // if attack is vertical, we can only hit one target at a time
-            if (attack.m_attackType != Attack.AttackType.Horizontal  && 
-                MeshCooldown.sharedInstance != null && MeshCooldown.sharedInstance.inCoolDown()) {
+            if (attack.m_attackType != Attack.AttackType.Horizontal && AttackTargetMeshCooldown.isPrimaryTargetInCooldown())
+            {
                 return false;
             }
 
-            if (target.GetComponentInParent<MineRock5>() != null) {
-                target = target.transform.parent.gameObject;
+            if (isTerrain(target))
+            {
+                // Prevent hitting the terrain too easily.
+                switch (EquipScript.CurrentMainHandEquipType())
+                {
+                    case EquipType.BattleAxe:
+                    case EquipType.Magic:
+                    case EquipType.Polearms:
+                        if (!LocalWeaponWield.IsDominantHandBehind)
+                        {
+                            return false;
+                        }
+                        break;
+                    case EquipType.Axe:
+                    case EquipType.Club:
+                    case EquipType.Knife:
+                    case EquipType.Spear:
+                    case EquipType.SpearChitin:
+                    case EquipType.Sword:
+                        if (!VRInputActions.valheim_Grab.GetState(VRPlayer.mainWeaponHandInputSource))
+                        {
+                            return false;
+                        }
+                        break;
+                    default:
+                        break;
+                }
+                isLastHitOnTerrain = true;
             }
-            
-            var character = target.GetComponentInParent<Character>();
-            if (character != null) {
-                target = character.gameObject;
+            else
+            {
+                isLastHitOnTerrain = false;
             }
-            
-            var meshCooldown = target.GetComponent<MeshCooldown>();
-            if (meshCooldown == null) {
-                meshCooldown = target.AddComponent<MeshCooldown>();
+
+            AttackTargetMeshCooldown attackTargetMeshCooldown = target.GetComponentInParent<AttackTargetMeshCooldown>();
+            if (attackTargetMeshCooldown == null)
+            {
+                var cooldownObject = target;
+                var character = target.GetComponentInParent<Character>();
+                if (character != null)
+                {
+                    cooldownObject = character.gameObject;
+                }
+                else if (target.GetComponentInParent<MineRock5>() != null)
+                {
+                    cooldownObject = target.transform.parent.gameObject;
+                }
+
+                attackTargetMeshCooldown = cooldownObject.AddComponent<AttackTargetMeshCooldown>();
             }
-            
-            return meshCooldown.tryTrigger(hitTime);
+            attackTargetMeshCooldown.showOutline = isLastHitOnTerrain ? VHVRConfig.ShowTerrainAttackOutline() : VHVRConfig.ShowNonTerrainAttackOutline();
+
+            // Always use the target cooldown time of the fast attack to allow a fast attack immediately after a slow attack;
+            // The slow attack cooldown time is managed by postSlowAttackCountdown in this class intead.
+            float targetCooldownTime = Mathf.Min(WeaponUtils.GetAttackDuration(attack), WeaponUtils.GetAttackDuration(secondaryAttack));
+            return isSlowAttack ?
+                attackTargetMeshCooldown.tryTriggerSecondaryAttack(targetCooldownTime) :
+                attackTargetMeshCooldown.tryTriggerPrimaryAttack(targetCooldownTime, speed);
         }
 
-        private void OnRenderObject() {
-            if (!isCollisionAllowed()) {
+        private void OnRenderObject()
+        {
+            if (!isCollisionAllowed())
+            {
                 return;
             }
-            transform.SetParent(colliderParent.transform);
-            transform.localRotation = Quaternion.identity;
-            transform.localPosition = Vector3.zero;
-            transform.localScale = Vector3.one;
-            transform.SetParent(Player.m_localPlayer.transform, true);
+            Transform playerTransform = Player.m_localPlayer.transform;
+            if (!isPlacedPoseCurrent(playerTransform))
+            {
+                transform.SetParent(colliderParent.transform);
+                transform.localRotation = Quaternion.identity;
+                transform.localPosition = Vector3.zero;
+                transform.localScale = Vector3.one;
+                transform.SetParent(playerTransform, true);
+                rememberPlacedPose(playerTransform);
+            }
+            // Once per frame, whichever camera renders first.
+            if (Time.frameCount != lastSweepFrame)
+            {
+                lastSweepFrame = Time.frameCount;
+                sweepFromLastPose();
+            }
         }
 
-        public void setColliderParent(Transform obj, string name, bool rightHand) {
+        // Whether the box is still where placing it again would put it: the same weapon pose (colliderParent), the same
+        // player pose, and nothing has moved the box since. OnRenderObject runs after every camera render, about ten
+        // times a frame in VR, and re-placing the box costs two SetParent calls each time. Exact comparisons, so the
+        // box ends up exactly where it did before; the weapon is posed by LocalWeaponWield in the same callback, in an
+        // order Unity does not fix, so the first render of a frame may place it before the weapon moves and a later
+        // one after, as before.
+        private bool isPlacedPoseCurrent(Transform playerTransform)
+        {
+            if (!hasPlacedPose || transform.parent != playerTransform || placedPlayerTransform != playerTransform)
+            {
+                return false;
+            }
+            return colliderParent.transform.localToWorldMatrix.Equals(placedFromColliderParent) &&
+                playerTransform.localToWorldMatrix.Equals(placedUnderPlayer) &&
+                transform.localPosition.Equals(placedLocalPosition) &&
+                transform.localRotation.Equals(placedLocalRotation) &&
+                transform.localScale.Equals(placedLocalScale);
+        }
 
-            outline = obj.parent.gameObject.AddComponent<Outline>();
-            outline.OutlineColor = Color.red;
-            outline.OutlineWidth = 5;
+        private void rememberPlacedPose(Transform playerTransform)
+        {
+            hasPlacedPose = true;
+            placedPlayerTransform = playerTransform;
+            placedFromColliderParent = colliderParent.transform.localToWorldMatrix;
+            placedUnderPlayer = playerTransform.localToWorldMatrix;
+            placedLocalPosition = transform.localPosition;
+            placedLocalRotation = transform.localRotation;
+            placedLocalScale = transform.localScale;
+        }
+
+        // The box is only put where the weapon is once per rendered frame (see OnRenderObject), and the trigger
+        // events only know of what it overlaps at those poses. At 30 to 40 fps a swing moves it 15 to 25 cm between
+        // frames, far more across a hitch, so a target thinner than that, or anything at all during a hitch, can fall
+        // into the gap and never be entered. The gap is swept instead: the box is tested at poses in between the
+        // last frame's and this one's, and whatever it finds there that it overlaps at neither end is hit as if it
+        // had been entered. What it overlaps at either end is left to the trigger events, which see those poses.
+        private void sweepFromLastPose()
+        {
+            Vector3 position = transform.position;
+            Quaternion rotation = transform.rotation;
+            bool hadLastPose = hasLastPose;
+            Vector3 fromPosition = lastPosition;
+            Quaternion fromRotation = lastRotation;
+            float gap = Time.unscaledTime - lastPoseTime;
+            lastPosition = position;
+            lastRotation = rotation;
+            lastPoseTime = Time.unscaledTime;
+            hasLastPose = true;
+
+            int maxSteps = VHVRConfig.WeaponSweepMaxSteps();
+            if (!hadLastPose || maxSteps <= 0 || isHoldingTankard || gap > MAX_SWEEP_GAP_SECONDS)
+            {
+                return;
+            }
+
+            float distance = Vector3.Distance(fromPosition, position);
+            if (distance > MAX_SWEEP_DISTANCE)
+            {
+                return;
+            }
+            // The box is a unit cube scaled by its parent, so its half extents are half its scale.
+            Vector3 halfExtents = transform.lossyScale * 0.5f;
+            float thickness = Mathf.Max(MIN_SWEEP_STEP, 2 * Mathf.Min(halfExtents.x, Mathf.Min(halfExtents.y, halfExtents.z)));
+            int steps = Mathf.Min(maxSteps, Mathf.FloorToInt(distance / thickness));
+            if (steps <= 0)
+            {
+                // The two poses overlap, nothing can have been passed over.
+                return;
+            }
+
+            sweptColliders.Clear();
+            addOverlaps(fromPosition, fromRotation, halfExtents);
+            addOverlaps(position, rotation, halfExtents);
+
+            for (int i = 1; i <= steps; i++)
+            {
+                float t = (float)i / (steps + 1);
+                Vector3 stepPosition = Vector3.Lerp(fromPosition, position, t);
+                Quaternion stepRotation = Quaternion.Slerp(fromRotation, rotation, t);
+                int count = Physics.OverlapBoxNonAlloc(
+                    stepPosition, halfExtents, sweepHits, stepRotation, SWEEP_LAYER_MASK, QueryTriggerInteraction.Collide);
+                if (count == 0)
+                {
+                    continue;
+                }
+                // The hit handlers read the box's pose, so it is put where the target was found for them.
+                transform.SetPositionAndRotation(stepPosition, stepRotation);
+                for (int j = 0; j < count; j++)
+                {
+                    Collider collider = sweepHits[j];
+                    if (collider == null || !sweptColliders.Add(collider))
+                    {
+                        continue;
+                    }
+                    if (VHVRConfig.ShowDebugColliders())
+                    {
+                        LogUtils.LogInfo(
+                            "VHVR weapon sweep: " + collider.name + " found in the " + distance.ToString("F2") +
+                            " m gap between frames (" + steps + " steps, " + (gap * 1000).ToString("F0") + " ms).");
+                    }
+                    MaybeAttackCollider(collider, requireStab: false, requireStabOrBackSlash: false);
+                }
+                transform.SetPositionAndRotation(position, rotation);
+            }
+        }
+
+        private static void addOverlaps(Vector3 position, Quaternion rotation, Vector3 halfExtents)
+        {
+            int count = Physics.OverlapBoxNonAlloc(position, halfExtents, sweepHits, rotation, SWEEP_LAYER_MASK, QueryTriggerInteraction.Collide);
+            for (int i = 0; i < count; i++)
+            {
+                if (sweepHits[i] != null)
+                {
+                    sweptColliders.Add(sweepHits[i]);
+                }
+            }
+        }
+
+        public void setColliderParent(MeshFilter meshFilter, Vector3 handPosition, int itemHash, bool isDominantHand)
+        {
+            hasLastPose = false;
+            hasPlacedPose = false;
+            var meshTranform = meshFilter.transform;
+            outline = meshTranform.parent.gameObject.GetComponent<Outline>();
+            if (outline == null)
+            {
+                outline = meshTranform.parent.gameObject.AddComponent<Outline>();
+            }
             outline.OutlineMode = Outline.Mode.OutlineVisible;
-            
-            isRightHand = rightHand;
-            if (isRightHand) {
-                item = Player.m_localPlayer.GetRightItem();   
-            }
-            else {
-                item = Player.m_localPlayer.GetLeftItem();
-            }
-            
-            attack = item.m_shared.m_attack.Clone();
+            // Update() turns the outline on when it is needed. It has to start off: Update() never runs its outline
+            // logic for items without an attack (e.g. the fishing rod), which would otherwise keep the default white
+            // outline forever.
+            outline.enabled = false;
 
-            switch (attack.m_attackAnimation) {
-                case "atgeir_attack":
-                    hitTime = 0.81f;
-                    break;
-                case "battleaxe_attack":
-                    hitTime = 0.87f;
-                    break;
-                case "knife_stab":
-                    hitTime = 0.49f;
-                    break;
-                case "swing_longsword":
-                case "spear_poke":
-                    hitTime = 0.63f;
-                    break;
-                case "swing_pickaxe":
-                    hitTime = 1.3f;
-                    break;
-                case "swing_sledge":
-                    hitTime = 2.15f;
-                    break;
-                case "swing_axe":
-                    hitTime = 0.64f;
-                    break;
-                default:
-                    hitTime = 0.63f;
-                    break;
-            }
+            this.isVanillaRightHandedWeapon = isDominantHand;
+            item = this.isVanillaRightHandedWeapon ? Player.m_localPlayer.GetRightItem() : Player.m_localPlayer.GetLeftItem();
 
-            itemIsTool = name == "Hammer";
+            var equipType = EquipScript.GetEquipTypeFromHash(itemHash);
+            itemIsTool =
+                equipType == EquipType.Hammer ||
+                equipType == EquipType.Hoe ||
+                equipType == EquipType.Cultivator ||
+                equipType == EquipType.Shovel ||
+                equipType == EquipType.Scythe;
 
-            if (colliderParent == null) {
+            if (colliderParent == null)
+            {
                 colliderParent = new GameObject();
             }
 
-            try {
-                WeaponColData colliderData = WeaponUtils.getForName(name);
-                colliderParent.transform.parent = obj;
+            usesUnarmedAttack = false;
+            stabsWithHeldItem = false;
+
+            switch (EquipScript.CurrentMainHandEquipType())
+            {
+                case EquipType.Fishing:
+                    setScriptActive(false);
+                    return;
+                case EquipType.Magic:
+                case EquipType.SpearChitin:
+                    if (this.isVanillaRightHandedWeapon)
+                    {
+                        // The held item is still what the collider is looked up for below.
+                        usesUnarmedAttack = true;
+                        stabsWithHeldItem = EquipScript.CurrentMainHandEquipType() == EquipType.SpearChitin;
+                        attack = secondaryAttack = Player.m_localPlayer.m_unarmedWeapon.m_itemData.m_shared.m_attack;
+                        break;
+                    }
+                    attack = item.m_shared.m_attack.Clone();
+                    secondaryAttack = item.m_shared.m_secondaryAttack.Clone();
+                    break;
+                default:
+                    attack = item.m_shared.m_attack.Clone();
+                    secondaryAttack = item.m_shared.m_secondaryAttack.Clone();
+                    break;
+            }
+            try
+            {
+                WeaponColData colliderData = WeaponUtils.GetColliderData(itemHash, item, meshFilter, handPosition);
+                colliderParent.transform.parent = meshTranform;
                 colliderParent.transform.localPosition = colliderData.pos;
                 colliderParent.transform.localRotation = Quaternion.Euler(colliderData.euler);
                 colliderParent.transform.localScale = colliderData.scale;
-                colliderDistance = Vector3.Distance(colliderParent.transform.position, obj.parent.position);
-                maxSnapshots = (int) (MAX_SNAPSHOTS_BASE + MAX_SNAPSHOTS_FACTOR * colliderDistance);
+
+                if (attack.m_harvest)
+                {
+                    // Adjust collider size by farming skill level.
+                    float skillFactor = Player.m_localPlayer.GetSkillFactor(Skills.SkillType.Farming);
+                    float radius = Mathf.Lerp(attack.m_harvestRadius, attack.m_harvestRadiusMaxLevel, skillFactor);
+                    Vector3 harvestScale = colliderData.scale * radius;
+                    colliderParent.transform.localScale = harvestScale;
+                    Vector3 additionalOffset = (harvestScale - colliderData.scale) * 0.5f;
+                    additionalOffset.x *= Mathf.Sign(colliderData.pos.x);
+                    additionalOffset.y *= Mathf.Sign(colliderData.pos.y);
+                    additionalOffset.z *= Mathf.Sign(colliderData.pos.z);
+                    colliderParent.transform.localPosition += additionalOffset;
+                }
+
                 setScriptActive(true);
             }
-            catch (InvalidEnumArgumentException) {
+            catch (InvalidEnumArgumentException)
+            {
+                LogUtils.LogWarning($"Collider not found for: {name}");
                 setScriptActive(false);
             }
         }
 
-
-        private void Update() {
-            
-            if (!outline) {
-                return;
-            }
-
-            var inCooldown = MeshCooldown.sharedInstance != null && MeshCooldown.sharedInstance.inCoolDown();
-
-            if (outline.enabled && Player.m_localPlayer.HaveStamina(getStaminaUsage() + 0.1f)
-                                && (attack.m_attackType == Attack.AttackType.Horizontal || !inCooldown)) {
-                outline.enabled = false;
-            }
-            else if (!outline.enabled && (!Player.m_localPlayer.HaveStamina(getStaminaUsage() + 0.1f)
-                                          || attack.m_attackType != Attack.AttackType.Horizontal && inCooldown)) {
-                outline.enabled = true;
-            }
-        }
-
-        private float getStaminaUsage() {
-            
-            if (attack.m_attackStamina <= 0.0) {
-                return 0.0f;   
-            }
-            double attackStamina = attack.m_attackStamina;
-            return (float) (attackStamina - attackStamina * 0.330000013113022 * Player.m_localPlayer.GetSkillFactor(item.m_shared.m_skillType));
-        }
-
-        private bool isCollisionAllowed() {
-            return scriptActive && VRPlayer.inFirstPerson && colliderParent != null;
-        }
-
-        private void setScriptActive(bool active) {
-            scriptActive = active;
-
-            if (!active) {
-                snapshots.Clear();
-                snapshotsC.Clear();
-            }
-        }
-
-        
-        
-        private void FixedUpdate() {
-            if (!isCollisionAllowed()) {
-                return;
-            }
-            
-            snapshots.Add(transform.localPosition);
-            snapshotsC.Add(GetHandPosition());
-            if (snapshots.Count > maxSnapshots) {
-                snapshots.RemoveAt(0);
-            }
-            if (snapshotsC.Count > maxSnapshots) {
-                snapshotsC.RemoveAt(0);
-            }
-        }
-
-        public bool hasMomentum() {
-            
-            if (!VHVRConfig.WeaponNeedsSpeed()) {
-                return true;
-            }
-
-            foreach (Vector3 snapshot in snapshots) {
-                if (Vector3.Distance(snapshot, transform.localPosition) > MIN_DISTANCE + colliderDistance / 2) {
-                    return true;
-                }
-            }
-
-            if (WeaponWield.isCurrentlyTwoHanded())
+        private void Update()
+        {
+            if (!outline || ButtonSecondaryAttackManager.isSecondaryAttackStarted || attack == null || item == null)
             {
-                foreach (Vector3 snapshot in snapshots)
-                {
-                    if (Vector3.Distance(snapshot, transform.localPosition) > MIN_DISTANCE_STAB_TWOHAND && isStab())
-                    {
-                        return true;
-                    }
-                }
+                return;
+            }
+
+            if (!VHVRConfig.ShowNonTerrainAttackOutline())
+            {
+                outline.enabled = false;
+                return;
+            }
+
+            bool inCooldown = AttackTargetMeshCooldown.isPrimaryTargetInCooldown();
+            bool canDoPrimaryAttack =
+                Player.m_localPlayer.HaveStamina(getStaminaUsage() + 0.1f) && (attack.m_attackType == Attack.AttackType.Horizontal || !inCooldown);
+            if (!canDoPrimaryAttack)
+            {
+                outline.enabled = true;
+                outline.OutlineColor = Color.red;
+                outline.OutlineWidth = 5;
+            }
+            else if (postSlowAttackCountdown > 0.5f)
+            {
+                outline.enabled = true;
+                outline.OutlineColor = Color.Lerp(new Color(1, 1, 0, 0), new Color(1, 1, 0, 0.5f), postSlowAttackCountdown - 0.5f);
+                outline.OutlineWidth = 10;
             }
             else
             {
-                foreach (Vector3 snapshot in snapshotsC)
-                {
-                    if (Vector3.Distance(snapshot, GetHandPosition()) > MIN_DISTANCE_STAB && isStab())
-                    {
-                        return true;
-                    }
-                }
+                outline.enabled = false;
             }
-
-            return false;
-        }
-        public float SwingAngle() {
-            float angle = Vector3.Angle(snapshotsC[0] - snapshotsC[snapshotsC.Count - 1], snapshotsC[0] - Player.m_localPlayer.transform.InverseTransformPoint(transform.position));
-            return angle;
         }
 
-        public bool isStab() {
-            return WeaponWield.isCurrentlyTwoHanded() ? (SwingAngle() < MAX_STAB_ANGLE_TWOHAND) : (SwingAngle() < MAX_STAB_ANGLE);
+        private float getStaminaUsage()
+        {
+            if (attack.m_attackStamina <= 0.0)
+            {
+                return 0.0f;
+            }
+            double attackStamina = attack.m_attackStamina;
+            return (float)(attackStamina - attackStamina * 0.330000013113022 * Player.m_localPlayer.GetSkillFactor(item.m_shared.m_skillType));
         }
-        private Vector3 GetHandPosition() {
-            if (isRightHand) {
-                return Player.m_localPlayer.transform.InverseTransformPoint(VRPlayer.rightHand.transform.position);
+
+        private bool isCollisionAllowed()
+        {
+            return scriptActive && VRPlayer.inFirstPerson && colliderParent != null;
+        }
+
+        private void setScriptActive(bool scriptActive)
+        {
+            this.scriptActive = scriptActive;
+        }
+
+        private void FixedUpdate()
+        {
+            if (postSlowAttackCountdown > 0)
+            {
+                postSlowAttackCountdown -= Time.fixedDeltaTime;
             }
-            else {
-                return Player.m_localPlayer.transform.InverseTransformPoint(VRPlayer.leftHand.transform.position);
+            if (twoHandedMultitargetSwipeCountdown > 0)
+            {
+                postSlowAttackCountdown -= Time.fixedDeltaTime;
             }
+
+            if (!isCollisionAllowed() || !canStabStick())
+            {
+                stabStick.Release();
+                return;
+            }
+
+            if (stabStick.FixedUpdate(transform.position, LocalWeaponWield.weaponForward))
+            {
+                var hand = isVanillaRightHandedWeapon ? VRPlayer.mainWeaponHand : VRPlayer.mainWeaponHand.otherHand;
+                var inputSource = isVanillaRightHandedWeapon ? VRPlayer.mainWeaponHandInputSource : VRPlayer.secondaryWeaponHandInputSource;
+                hand.hapticAction.Execute(0, Time.fixedDeltaTime, 50, 0.2f, inputSource);
+            }
+        }
+
+        private static bool canStabStick()
+        {
+            switch (EquipScript.CurrentMainHandEquipType())
+            {
+                case EquipType.Knife:
+                case EquipType.Polearms:
+                case EquipType.Spear:
+                case EquipType.Sword:
+                    return true;
+                case EquipType.Magic:
+                    return Player.m_localPlayer.GetRightItem()?.m_shared?.m_name == LIGHTNING_STRIKE_STAFF_NAME;
+                default:
+                    return false;
+            }
+        }
+
+        private bool hasMomentum(bool isShovelScoop, out bool isStab, out bool isBackSlash, out float speed)
+        {
+            Vector3 velocity;
+            bool shoveling = false;
+            if (weaponWield.twoHandedState == WeaponWield.TwoHandedState.SingleHanded)
+            {
+                velocity =
+                    WeaponUtils.GetWeaponVelocity(
+                        mainHandPhysicsEstimator.GetVelocity(),
+                        mainHandPhysicsEstimator.GetAngularVelocity(),
+                        LocalWeaponWield.weaponForward.normalized * WEAPON_ANGULAR_WEIGHT_OFFSET);
+                speed = velocity.magnitude;
+                shoveling = (velocity.y > 1f);
+            }
+            else
+            {
+                var leftHandVelocity = VRPlayer.leftHandPhysicsEstimator.GetVelocity();
+                var rightHandVelocity = VRPlayer.rightHandPhysicsEstimator.GetVelocity();
+                var direction = (leftHandVelocity + rightHandVelocity).normalized;
+                var leftHandSpeed = Vector3.Dot(leftHandVelocity, direction);
+                var rightHandSpeed = Vector3.Dot(rightHandVelocity, direction);
+                speed = Mathf.Max(leftHandSpeed, rightHandSpeed);
+                velocity = direction * speed;
+                shoveling =
+                    weaponWield.twoHandedState == WeaponWield.TwoHandedState.LeftHandBehind ?
+                    rightHandVelocity.y > 0:
+                    leftHandVelocity.y > 0;
+            }
+
+            isBackSlash = Vector3.Angle(velocity, LocalWeaponWield.weaponForward) > 135;
+            isStab = !isBackSlash && this.isStab(velocity);
+
+            if (isShovelScoop && !shoveling)
+            {
+                return false;
+            }
+
+            var minSpeed = GetMinSpeed(isShovelScoop);
+
+            if (weaponWield.twoHandedState == WeaponWield.TwoHandedState.SingleHanded &&
+                VHVRConfig.TwoHandedWield() &&
+                EquipScript.CurrentMainHandEquipType() == EquipType.Polearms &&
+                !TwoHandedGeometry.LocalAtgeirGeometryProvider.UsingArmpitAnchor)
+            {
+                // When wielding polearms with only one hand without armpit anchor, make attack harder to trigger
+                return (isStab && speed > minSpeed) ||
+                    Vector3.Dot(velocity, LocalWeaponWield.weaponForward.normalized) > minSpeed;
+            }
+
+            return isStab || speed > minSpeed;
+        }
+
+        private float GetMinSpeed(bool isShovelScoop)
+        {
+            switch (EquipScript.CurrentMainHandEquipType())
+            {
+                case EquipType.Hammer:
+                    return MIN_HAMMER_SPEED;
+                case EquipType.Shovel:
+                    // The shovel is only used as a tool when scooping; hitting anything else with it is a kick and
+                    // should take as much speed as swinging a weapon.
+                    return isShovelScoop ? MIN_LONG_TOOL_SPEED : VHVRConfig.SwingSpeedRequirement();
+                case EquipType.BattleAxe:
+                case EquipType.Sledge:
+                case EquipType.Polearms:
+                    // Increase speed requirement when wielding certain two-handed weapons with only one hand.
+                    return VHVRConfig.TwoHandedWield() ? VHVRConfig.SwingSpeedRequirement() * 1.5f : VHVRConfig.SwingSpeedRequirement();
+                default:
+                    return itemIsTool ? MIN_LONG_TOOL_SPEED : VHVRConfig.SwingSpeedRequirement();
+            }
+            
+        }
+
+        // A stab is judged by the path that the hand has just taken rather than by the velocity alone, which is only
+        // a single sample that is often taken before or after the peak of the thrust and jitters in direction.
+        private bool isStab(Vector3 velocity)
+        {
+            Vector3 weaponForward = LocalWeaponWield.weaponForward.normalized;
+            bool isTwoHanded = weaponWield.twoHandedState != WeaponWield.TwoHandedState.SingleHanded;
+
+            Vector3 thrust = mainHandPhysicsEstimator.GetLongestLocomotion(STAB_THRUST_DURATION);
+            if (isTwoHanded)
+            {
+                // Either hand may be the one that drives the thrust.
+                Vector3 leftHandThrust = VRPlayer.leftHandPhysicsEstimator.GetLongestLocomotion(STAB_THRUST_DURATION);
+                Vector3 rightHandThrust = VRPlayer.rightHandPhysicsEstimator.GetLongestLocomotion(STAB_THRUST_DURATION);
+                thrust =
+                    Vector3.Dot(leftHandThrust, weaponForward) > Vector3.Dot(rightHandThrust, weaponForward) ?
+                    leftHandThrust :
+                    rightHandThrust;
+            }
+
+            if (!WeaponUtils.IsStab(thrust, weaponForward, isTwoHanded)) {
+                return false;
+            }
+
+            if (Vector3.Dot(thrust, weaponForward) < MIN_STAB_THRUST)
+            {
+                return false;
+            }
+
+            if (Vector3.Dot(velocity, weaponForward) < MIN_STAB_SPEED)
+            {
+                return false;
+            }
+
+            // LogUtils.LogDebug("VHVR: stab detected on weapon direction: " + LocalWeaponWield.weaponForward);
+            return true;
+        }
+
+        public static bool isTerrain(GameObject target)
+        {
+            return (target.GetComponentInParent<MineRock5>() == null ? target.transform : target.transform.parent).GetComponent<Heightmap>() != null;
         }
     }
 }

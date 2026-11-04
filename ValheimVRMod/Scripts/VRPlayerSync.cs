@@ -2,20 +2,40 @@ using System.Linq;
 using RootMotion.FinalIK;
 using UnityEngine;
 using ValheimVRMod.Utilities;
+using ValheimVRMod.VRCore;
 
 using static ValheimVRMod.Utilities.LogUtils;
 
 namespace ValheimVRMod.Scripts {
-    public class VRPlayerSync : MonoBehaviour {
+    public class VRPlayerSync : MonoBehaviour, WeaponWieldSync.TwoHandedStateProvider {
 
-        private VRIK vrik;
-        
-        static readonly float MIN_CHANGE = 0.001f;
-        
+        private VRIK vrikSync;
+
+        const float MIN_CHANGE = 0.001f;
+
         public GameObject camera = null;
         public GameObject rightHand = null;
         public GameObject leftHand = null;
+        public GameObject pelvis = null;
+        public GameObject leftFoot = null;
+        public GameObject rightFoot = null;
+        public Vector3 weaponSyncLocalPosition;
+        public Quaternion weaponSyncLocalRotation;
 
+        public bool isLeftHanded { get { return player == Player.m_localPlayer ? !VRPlayer.isRightHandMainWeaponHand : clientIsLeftHanded; } }
+        public EquipType mainHandEquipType = EquipType.None;
+        public EquipType offHandEquipType = EquipType.None;
+        public EquipType leftHandEquipType { get { return isLeftHanded ? mainHandEquipType : offHandEquipType; } }
+        public EquipType rightHandEquipType { get { return isLeftHanded ? offHandEquipType : mainHandEquipType; } }
+        public bool hasReceivedData { get; private set; }
+        public bool receivingFootData { get; private set; } = false;
+
+        private bool hasReceivedWeaponSync = false;
+        private bool clientIsLeftHanded = false; 
+        private WeaponWield.TwoHandedState twoHandedState = WeaponWield.TwoHandedState.SingleHanded;
+        private bool inverseHold = false;
+
+        private Player player;
         private Vector3 ownerLastPositionCamera = Vector3.zero;
         private Vector3 ownerVelocityCamera = Vector3.zero;
         private Vector3 ownerLastPositionLeft = Vector3.zero;
@@ -27,6 +47,9 @@ namespace ValheimVRMod.Scripts {
         private Vector3 clientTempRelPosCamera = Vector3.zero;
         private Vector3 clientTempRelPosLeft = Vector3.zero;
         private Vector3 clientTempRelPosRight = Vector3.zero;
+        private Vector3 clientTempRelPosPelvis = Vector3.zero;
+        private Vector3 clientTempRelPosLeftFoot = Vector3.zero;
+        private Vector3 clientTempRelPosRightFoot = Vector3.zero;
 
         private uint lastDataRevision = 0;
         private float deltaTimeCounter = 0f;
@@ -40,15 +63,26 @@ namespace ValheimVRMod.Scripts {
         private Quaternion[] rightFingerRotations = new Quaternion[20];
 
         private bool fingersUpdated;
-
-        public BowManager bowManager;
-        public GameObject currentLeftWeapon;
-        public GameObject currentRightWeapon;
+        // TODO: remove this once weapon sync is fully supported
+        
 
         private void Awake() {
             camera = new GameObject();
-            rightHand = new GameObject();
             leftHand = new GameObject();
+            rightHand = new GameObject();
+            pelvis = new GameObject();
+            leftFoot = new GameObject();
+            rightFoot = new GameObject();
+            player = GetComponent<Player>();
+            // The remote IK targets are kept in the space of the player root, so that they move with the root
+            // whenever it moves (ZSyncTransform moves it in FixedUpdate in no fixed order with this script).
+            // The local player replaces camera and hands and only uses world poses, so this is harmless there.
+            camera.transform.SetParent(transform, false);
+            leftHand.transform.SetParent(transform, false);
+            rightHand.transform.SetParent(transform, false);
+            pelvis.transform.SetParent(transform, false);
+            leftFoot.transform.SetParent(transform, false);
+            rightFoot.transform.SetParent(transform, false);
         }
 
         void Start()
@@ -65,26 +99,93 @@ namespace ValheimVRMod.Scripts {
             if (isOwner())
             {
                 calculateOwnerVelocities(dt);
+                return;
             }
-            if (isValid() && !isOwner()) {
-                clientSync(dt);
+
+            if (!isValid()) {
+                return;
             }
+
+            clientSync(dt);
+        }
+
+        public void DestroyVrik()
+        {
+            if (vrikSync == null)
+            {
+                return;
+            }
+
+            Destroy(vrikSync);
+            vrikSync = null;
+            Destroy(GetComponent<RemoteClothRemover>());
+        }
+
+        public WeaponWield.TwoHandedState GetTwoHandedState()
+        {
+            return twoHandedState;
+        }
+
+        public bool IsLeftHanded()
+        {
+            return isLeftHanded;
+        }
+
+        public bool InverseHold()
+        {
+            if (isOwner())
+            {
+                if (EquipScript.CurrentMainHandEquipType() == EquipType.Knife)
+                {
+                    inverseHold = LocalWeaponWield.IsDominantHandHoldInversed;
+                }
+                else if (EquipScript.IsSpearEquipped())
+                {
+                    inverseHold = LocalWeaponWield.IsDominantHandHoldInversed || LocalWeaponWield.isCurrentlyTwoHanded();
+                }
+                else
+                {
+                    inverseHold = LocalWeaponWield.IsDominantHandHoldInversed && !LocalWeaponWield.isCurrentlyTwoHanded();
+                }
+            }
+            return inverseHold;
+        }
+        
+        public bool IsVrEnabled()
+        {
+            return vrikSync != null;
+        }
+
+        public bool MaybeAddClientWeaponSync(GameObject item)
+        {
+            // Check hasReceivedData instead once weapon sync is fully supported
+            if (hasReceivedWeaponSync)
+            {
+                item.AddComponent<ClientWeaponSync>();
+            }
+            return hasReceivedWeaponSync;
+        }
+
+        public void UpdateWeaponTransform(Vector3 localPosition, Quaternion localRotation)
+        {
+            weaponSyncLocalPosition = localPosition;
+            weaponSyncLocalRotation = localRotation;
         }
 
         private void calculateOwnerVelocities(float dt)
         {
-            ownerVelocityCamera = (camera.transform.position - ownerLastPositionCamera) / dt;
-            ownerVelocityLeft = (leftHand.transform.position - ownerLastPositionLeft) / dt;
-            ownerVelocityRight = (rightHand.transform.position - ownerLastPositionRight) / dt;
+            ownerVelocityCamera = (camera.transform.position - player.transform.position - ownerLastPositionCamera) / dt;
+            ownerVelocityLeft = (leftHand.transform.position - player.transform.position - ownerLastPositionLeft) / dt;
+            ownerVelocityRight = (rightHand.transform.position - player.transform.position - ownerLastPositionRight) / dt;
             // Update "last" position for next cycle velocity calculation
             updateOwnerLastPositions();
         }
 
         private void updateOwnerLastPositions()
         {
-            ownerLastPositionCamera = camera.transform.position;
-            ownerLastPositionLeft = leftHand.transform.position;
-            ownerLastPositionRight = rightHand.transform.position;
+            ownerLastPositionCamera = camera.transform.position - player.transform.position;
+            ownerLastPositionLeft = leftHand.transform.position - player.transform.position;
+            ownerLastPositionRight = rightHand.transform.position - player.transform.position;
         }
 
         private void LateUpdate()
@@ -95,51 +196,75 @@ namespace ValheimVRMod.Scripts {
                 return;
             }
 
+            if (vrikSync == null)
+            {
+                return;
+            }
+
             if (!fingersUpdated) {
                 return;
             }
             
-            var vrik = GetComponent<VRIK>();
-            if (vrik == null) {
-                return;
-            }
-            
-            applyFingers(vrik.references.leftHand, leftFingerRotations);
-            applyFingers(vrik.references.rightHand, rightFingerRotations);
+            applyFingers(vrikSync.references.leftHand, leftFingerRotations);
+            applyFingers(vrikSync.references.rightHand, rightFingerRotations);
             fingersUpdated = false;
         }
 
         // Transmit position, rotation, and velocity information to server
         private void ownerSync()
         {
-            if (!VHVRConfig.UseVrControls()) {
+            if (!VHVRConfig.UseVrControls() || VRPlayer.ShouldPauseMovement || VRPlayer.vrikRef == null) {
                 return;
             }
 
             ZPackage pkg = new ZPackage();
+
             writeData(pkg, camera, ownerVelocityCamera);
+            if (!VRPlayer.vrikRef.enabled)
+            {
+                // Stati that should temporarily disable VRIK such as sleeping/staggering/dodging are not sent over network,
+                // so we send a vr_data package short of further data to signal remote players that VRIK is temporarily disabled
+                GetComponent<ZNetView>().GetZDO().Set("vr_data", pkg.GetArray());
+                return;
+            }
+
             writeData(pkg, leftHand, ownerVelocityLeft);
             writeData(pkg, rightHand, ownerVelocityRight);
-            writeFingers(pkg, GetComponent<VRIK>().references.leftHand);
-            writeFingers(pkg, GetComponent<VRIK>().references.rightHand);
+            pelvis.transform.SetPositionAndRotation(
+                VRPlayer.vrikRef.solver.spine.pelvis.solverPosition,
+                VRPlayer.vrikRef.solver.spine.pelvis.solverRotation);
+            writeData(pkg, pelvis, ownerVelocityCamera);
+            writeFingers(pkg, VRPlayer.vrikRef.references.leftHand);
+            writeFingers(pkg, VRPlayer.vrikRef.references.rightHand);
             pkg.Write(BowLocalManager.instance != null && BowLocalManager.instance.pulling);
+            pkg.Write(isLeftHanded);
+            pkg.Write((byte)(twoHandedState = LocalWeaponWield.LocalPlayerTwoHandedState));
+            pkg.Write(InverseHold());
+            pkg.Write(weaponSyncLocalPosition);
+            pkg.Write(weaponSyncLocalRotation);
+            if (VRPlayer.vrPlayerInstance != null && VRPlayer.vrPlayerInstance.shouldTrackFeet())
+            {
+                writeTransformRelativeToPlayer(pkg, VRPlayer.leftFoot);
+                writeTransformRelativeToPlayer(pkg, VRPlayer.rightFoot);
+            }
 
             GetComponent<ZNetView>().GetZDO().Set("vr_data", pkg.GetArray());
         }
 
-        private void writeData(ZPackage pkg, GameObject obj, Vector3 ownerVelocity) 
+        private void writeTransformRelativeToPlayer(ZPackage pkg, Transform transform) 
         {
-            pkg.Write(obj.transform.position);
-            pkg.Write(obj.transform.rotation);
+            pkg.Write(transform.position - player.transform.position);
+            pkg.Write(transform.rotation);
+        }
+
+        private void writeData(ZPackage pkg, GameObject obj, Vector3 ownerVelocity)
+        {
+            writeTransformRelativeToPlayer(pkg, obj.transform);
             pkg.Write(ownerVelocity);
         }
 
         private void clientSync(float dt) {
-            syncPositionAndRotation(GetComponent<ZNetView>().GetZDO(), dt);
-        }
-
-        private void syncPositionAndRotation(ZDO zdo, float dt)
-        {
+            ZDO zdo = GetComponent<ZNetView>().GetZDO();
             if (zdo == null)
             {
                 return;
@@ -149,8 +274,9 @@ namespace ValheimVRMod.Scripts {
             {
                 return;
             }
+            hasReceivedData = true;
             ZPackage pkg = new ZPackage(vr_data);
-            var currentDataRevision = zdo.m_dataRevision;
+            var currentDataRevision = zdo.DataRevision;
             if (currentDataRevision != lastDataRevision)
             {
                 // New data revision since last sync so we reset our deltaT counter
@@ -161,39 +287,144 @@ namespace ValheimVRMod.Scripts {
             deltaTimeCounter += dt;
             deltaTimeCounter = Mathf.Min(deltaTimeCounter, 2f);
 
-            extractAndUpdate(pkg, ref camera, ref clientTempRelPosCamera, hasTempRelPos);
-            extractAndUpdate(pkg, ref leftHand, ref clientTempRelPosLeft, hasTempRelPos);
-            extractAndUpdate(pkg, ref rightHand, ref clientTempRelPosRight, hasTempRelPos);
+            // The owner sends world offsets from its root; its root rotation turns them into the root's space.
+            Quaternion toOwnerRoot = Quaternion.Inverse(zdo.GetRotation());
+
+            extractAndUpdate(pkg, camera, ref clientTempRelPosCamera, hasTempRelPos, toOwnerRoot);
+
+            if (!hasMoreData(pkg))
+            {
+                // If the remote player sends a vr_data package with only camera data but nothing else,
+                // they are trying to signal that VRIK should be temporarily disabled (e. g. due to sleeping/staggering/dodging).
+                if (vrikSync != null)
+                {
+                    vrikSync.enabled = false;
+                }
+                return;
+            }
+
+            extractAndUpdate(pkg, leftHand, ref clientTempRelPosLeft, hasTempRelPos, toOwnerRoot);
+            extractAndUpdate(pkg, rightHand, ref clientTempRelPosRight, hasTempRelPos, toOwnerRoot);
+            extractAndUpdate(pkg, pelvis, ref clientTempRelPosPelvis, hasTempRelPos, toOwnerRoot);
+
             maybeAddVrik();
-            hasTempRelPos = true;
+            if (vrikSync != null)
+            {
+                vrikSync.enabled = true;
+            }
             readFingers(pkg);
             maybePullBow(pkg.ReadBool());
+            clientIsLeftHanded = pkg.ReadBool();
+            twoHandedState = (WeaponWield.TwoHandedState) pkg.ReadByte();
+            inverseHold = pkg.ReadBool();
+            if (hasMoreData(pkg)) // TODO: remove this check once weapon sync is fully supported
+            {
+                ExtractAndSmoothUpdateVector(pkg, ref weaponSyncLocalPosition, hasTempRelPos);
+                weaponSyncLocalRotation = pkg.ReadQuaternion();
+                hasReceivedWeaponSync = true;
+            }
+            if (hasMoreData(pkg))
+            {
+                ExtractAndSmoothUpdateLocalPosition(pkg, leftFoot, ref clientTempRelPosLeftFoot, receivingFootData, toOwnerRoot);
+                updateLocalRotation(leftFoot, toOwnerRoot * pkg.ReadQuaternion());
+                ExtractAndSmoothUpdateLocalPosition(pkg, rightFoot, ref clientTempRelPosRightFoot, receivingFootData, toOwnerRoot);
+                updateLocalRotation(rightFoot, toOwnerRoot * pkg.ReadQuaternion());
+                receivingFootData = true;
+                if (vrikSync != null)
+                {
+                    VrikCreator.EnableFootTracking(vrikSync);
+                }
+            }
+            else
+            {
+                receivingFootData = false;
+                if (vrikSync != null)
+                {
+                    VrikCreator.DisableFootTracking(vrikSync);
+                }
+            }
+            hasTempRelPos = true;
+
+            correctHandedness();
+        }
+
+        private void correctHandedness()
+        {
+            // Client isLeftHanded sync may happen after equipping.
+            // Force re-equip to trigger a patch with the updated isLeftHanded.
+            var mainHandItem = player.m_visEquipment.m_rightItemInstance;
+            var mainHandItemHash = player.m_visEquipment.m_currentRightItemHash;
+            var mainHandItemQuality = player.m_visEquipment.m_currentRightItemQuality;
+            if (mainHandItem != null && mainHandItemHash != 0)
+            {
+                if (isLeftHanded ?
+                    mainHandItem.transform.parent == player.m_visEquipment.m_rightHand :
+                    mainHandItem.transform.parent == player.m_visEquipment.m_leftHand)
+                {
+                    LogUtils.LogDebug("Switching main hand item to the other hand");
+                    player.m_visEquipment.SetRightHandEquipped(0, 0);
+                    player.m_visEquipment.SetRightHandEquipped(mainHandItemHash, mainHandItemQuality);
+                }
+            }
+
+            var offHandItem = player.m_visEquipment.m_leftItemInstance;
+            var offHandItemHash = player.m_visEquipment.m_currentLeftItemHash;
+            var offHandItemQuality = player.m_visEquipment.m_currentLeftItemQuality;
+            if (offHandItem != null && offHandItemHash != 0)
+            {
+                if (isLeftHanded ?
+                    offHandItem.transform.parent == player.m_visEquipment.m_leftHand :
+                    offHandItem.transform.parent == player.m_visEquipment.m_rightHand)
+                {
+                    LogUtils.LogDebug("Switching secondary hand item to right hand");
+                    var variant = player.m_visEquipment.m_currentLeftItemVariant;
+                    player.m_visEquipment.SetLeftHandEquipped(0, 0, 0);
+                    player.m_visEquipment.SetLeftHandEquipped(offHandItemHash, variant, offHandItemQuality);
+                }
+            }
         }
 
         private void maybePullBow(bool pulling) {
-
-            if (bowManager == null) {
-                if (!pulling || currentLeftWeapon == null) {
-                    return;
-                }
-                
-                bowManager = currentLeftWeapon.AddComponent<BowManager>();
-                bowManager.mainHand = VHVRConfig.LeftHanded() ? leftHand.transform : rightHand.transform;
+            GameObject bow = player.m_visEquipment.m_leftItemInstance;
+            if (bow == null)
+            {
+                return;
             }
 
+            var bowManager = bow.GetComponentInChildren<BowManager>();
+            if (bowManager == null) {
+                if (!pulling) {
+                    return;
+                }
+                var bowMesh = bow.GetComponentInChildren<MeshFilter>();
+                if (bowMesh == null)
+                {
+                    LogUtils.LogDebug("No bow mesh found for remote player despite pulling a bow");
+                    return;
+                }
+                bowManager = bowMesh.gameObject.AddComponent<BowManager>();
+            }
+            bowManager.arrowHandTransform = isLeftHanded ? leftHand.transform : rightHand.transform;
             bowManager.pulling = pulling;
         }
 
-        private void extractAndUpdate(ZPackage pkg, ref GameObject obj, ref Vector3 tempRelPos, bool hasTempRelPos)
+        private void ExtractAndSmoothUpdateVector(ZPackage pkg, ref Vector3 v, bool hasRead)
         {
-            // Extract package data
-            var position = pkg.ReadVector3();
-            var rotation = pkg.ReadQuaternion();
-            var velocity = pkg.ReadVector3();
-            
-            // Update position based on last written position, velocity, and elapsed time since last data revision
-            position += velocity * deltaTimeCounter;
-            
+            var newValue = pkg.ReadVector3();
+            if (!hasRead)
+            {
+                v = newValue;
+            }
+            else if (Vector3.Distance(v, newValue) > MIN_CHANGE)
+            {
+                v = Vector3.Lerp(v, newValue, 0.2f);
+            }
+        }
+
+        private static void ExtractAndSmoothUpdateLocalPosition(
+            ZPackage pkg, GameObject obj, ref Vector3 tempRelPos, bool hasTempRelPos, Quaternion toOwnerRoot)
+        {
+            var position = toOwnerRoot * pkg.ReadVector3();
             if (!hasTempRelPos)
             {
                 tempRelPos = position;
@@ -205,37 +436,46 @@ namespace ValheimVRMod.Scripts {
                 position = tempRelPos;
             }
 
-            // Update the object position with new calculated position
-            updatePosition(obj, position);
-            
-            // Update the rotation
-            updateRotation(obj, rotation);
-        }
-
-        private static void updatePosition(GameObject obj, Vector3 position)
-        {
-            if (Vector3.Distance(obj.transform.position, position) > MIN_CHANGE)
+            if (Vector3.Distance(obj.transform.localPosition, position) > MIN_CHANGE)
             {
-                obj.transform.position = position;
+                obj.transform.localPosition = position;
             }
         }
 
-        private static void updateRotation(GameObject obj, Quaternion rotation)
+        private static void extractAndUpdate(
+            ZPackage pkg, GameObject obj, ref Vector3 tempRelPos, bool hasTempRelPos, Quaternion toOwnerRoot)
         {
-            if (Quaternion.Angle(obj.transform.rotation, rotation) > MIN_CHANGE)
+            ExtractAndSmoothUpdateLocalPosition(pkg, obj, ref tempRelPos, hasTempRelPos, toOwnerRoot);
+            updateLocalRotation(obj, toOwnerRoot * pkg.ReadQuaternion());
+            var velocity = pkg.ReadVector3(); // Deprecated
+        }
+
+        private static bool hasMoreData(ZPackage pkg)
+        {
+            return pkg.m_reader.BaseStream.Position < pkg.GetArray().Length;
+        }
+
+        private static void updateLocalRotation(GameObject obj, Quaternion rotation)
+        {
+            if (Quaternion.Angle(obj.transform.localRotation, rotation) > MIN_CHANGE)
             {
-                obj.transform.rotation = Quaternion.Slerp(obj.transform.rotation, rotation, 0.2f);
+                obj.transform.localRotation = Quaternion.Slerp(obj.transform.localRotation, rotation, 0.2f);
             }
         }
 
         private void maybeAddVrik() {
-            if (vrik != null)
+            if (vrikSync != null)
             {
                 return;
             }
-            vrik = VrikCreator.initialize(gameObject, leftHand.transform,
-                rightHand.transform, camera.transform);
-            VrikCreator.resetVrikHandTransform(gameObject.GetComponent<Player>());
+            vrikSync =
+                VrikCreator.initialize(
+                    gameObject, leftHand.transform, rightHand.transform, camera.transform, pelvis.transform, leftFoot.transform, rightFoot.transform);
+            VrikCreator.resetVrikHandTransform(player);
+            if (vrikSync != null && GetComponent<RemoteClothRemover>() == null)
+            {
+                gameObject.AddComponent<RemoteClothRemover>();
+            }
         }
 
         private bool isOwner()
@@ -311,6 +551,22 @@ namespace ValheimVRMod.Scripts {
             if (finger.childCount > 0) {
                 applyFinger(finger.GetChild(0), fingerRotations, ref fingerCounter);
             }
+        }
+    }
+
+    public class ClientWeaponSync : MonoBehaviour
+    {
+        private VRPlayerSync playerSync { get { return _playerSync == null ? (_playerSync = GetComponentInParent<VRPlayerSync>()) : _playerSync; } }
+        private VRPlayerSync _playerSync;
+
+        protected void OnRenderObject()
+        {
+            if (playerSync == null)
+            {
+                return;
+            }
+            transform.localPosition = playerSync.weaponSyncLocalPosition;
+            transform.localRotation = playerSync.weaponSyncLocalRotation;
         }
     }
 }

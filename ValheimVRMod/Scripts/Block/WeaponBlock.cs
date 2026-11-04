@@ -1,34 +1,91 @@
+using ValheimVRMod.VRCore.Backends;
 using UnityEngine;
 using ValheimVRMod.Utilities;
 using ValheimVRMod.VRCore;
 
-namespace ValheimVRMod.Scripts.Block {
-    public class WeaponBlock : Block {
-        
-        public WeaponWield weaponWield;
+namespace ValheimVRMod.Scripts.Block
+{
+    public class WeaponBlock : Block
+    {
+        public LocalWeaponWield weaponWield;
         public static WeaponBlock instance;
 
-        private void OnDisable() {
+        private const float MIN_PARRY_SPEED = 1.5f;
+        private readonly Vector3 handUp = new Vector3(0, -0.15f, -0.85f);
+
+        private void OnDisable()
+        {
             instance = null;
         }
-        
-        private void Awake() {
+
+        protected override void Awake()
+        {
+            base.Awake();
             _meshCooldown = gameObject.AddComponent<MeshCooldown>();
             instance = this;
-            hand = VHVRConfig.LeftHanded() ? VRPlayer.leftHand.transform : VRPlayer.rightHand.transform;
+            hand = VRPlayer.mainWeaponHand.transform;
+            offhand = VRPlayer.mainWeaponHand.otherHand.transform;
         }
 
-        public override void setBlocking(Vector3 hitDir) {
-            var angle = Vector3.Dot(hitDir, weaponWield.weaponForward);
-            _blocking = weaponWield.allowBlocking() && angle > -0.5f && angle < 0.5f && EquipScript.getLeft() != EquipType.Shield;
-        }
-        
-        protected override void ParryCheck(Vector3 posStart, Vector3 posEnd) {
-            if (Vector3.Distance(posEnd, posStart) > minDist) {
-                blockTimer = blockTimerParry;
-            } else {
-                blockTimer = blockTimerNonParry;
+        public override void setBlocking(HitData hitData)
+        {
+            var angle = Vector3.Angle(hitData.m_dir, LocalWeaponWield.weaponForward);
+
+            // The weaponWield.transform outside its OnRenderObject() might be invalid, therefore we use weaponWield.physicsEstimator.transform intead.
+            Vector3 hitPointAlongWeapon = weaponWield.physicsEstimator.transform.position + Vector3.Project(hitData.m_point - weaponWield.physicsEstimator.transform.position, LocalWeaponWield.weaponForward);
+            Vector3 weaponVelocity = weaponWield.physicsEstimator.GetVelocityOfPoint(hitPointAlongWeapon);
+
+            if (VHVRConfig.UseRealisticBlock())
+            {
+                bool blockWithAngle = 15 < angle && angle < 165;
+                bool blockWithSpeed = weaponVelocity.magnitude > MIN_PARRY_SPEED;
+                _blocking = (blockWithAngle || blockWithSpeed) && hitIntersectsBlockBox(hitData) && VRInputActions.valheim_Grab.GetState(VRPlayer.mainWeaponHandInputSource);
             }
+            else if (LocalWeaponWield.nonDominantHandHasWeapon() && EquipScript.CurrentOffHandEquipType() != EquipType.Crossbow)
+            {
+                var leftAngle = Vector3.Angle(hitData.m_dir, offhand.TransformDirection(handUp));
+                var rightAngle = Vector3.Angle(hitData.m_dir, hand.TransformDirection(handUp));
+                var leftHandBlock = (leftAngle > 60 && leftAngle < 120f);
+                var rightHandBlock = (rightAngle > 60 && rightAngle < 120f);
+                _blocking = leftHandBlock && rightHandBlock;
+
+                var leftParrySpeed = CheckParryMotion(VRPlayer.leftHandPhysicsEstimator.GetVelocityOfPoint(hitPointAlongWeapon), hitData.m_dir);
+                var rightParrySpeed = CheckParryMotion(VRPlayer.rightHandPhysicsEstimator.GetVelocityOfPoint(hitPointAlongWeapon), hitData.m_dir);
+
+                SetParryState(Mathf.Max(leftParrySpeed, rightParrySpeed));
+                return;
+            }
+            else if (VHVRConfig.UseGrabButtonBlock())
+            {
+                bool isShieldorWeaponBlock = (EquipScript.CurrentOffHandEquipType() != EquipType.Shield) || (EquipScript.CurrentOffHandEquipType() == EquipType.Shield && weaponWield.allowBlocking());
+                _blocking = isShieldorWeaponBlock && angle > 60 && angle < 120;
+            }
+            else
+            {
+                _blocking = weaponWield.allowBlocking() && angle > 60 && angle < 120;
+            }
+
+            SetParryState(CheckParryMotion(weaponVelocity, hitData.m_dir));
+        }
+
+        private float CheckParryMotion(Vector3 weaponVelocity, Vector3 hitDir)
+        {
+            if (VHVRConfig.UseRealisticBlock() &&
+                EquipScript.CurrentOffHandEquipType() == EquipType.Shield &&
+                ShieldBlock.instance != null &&
+                ShieldBlock.instance.isBlocking())
+            {
+                // Disable weapon parry when using shield to block
+                return blockTimerNonParry;
+            }
+            // Only consider the component of the velocity perpendicular to the hit direction as parrying speed.
+            float parrySpeed = Vector3.ProjectOnPlane(weaponVelocity, hitDir).magnitude;
+            return parrySpeed;
+        }
+
+        private void SetParryState(float parrySpeed)
+        {
+            blockTimer = parrySpeed > MIN_PARRY_SPEED ? blockTimerParry : blockTimer = blockTimerNonParry;
         }
     }
 }

@@ -1,4 +1,4 @@
-﻿//======= Copyright (c) Valve Corporation, Google LLC, All rights reserved. ===============
+//======= Copyright (c) Valve Corporation, Google LLC, All rights reserved. ===============
 using UnityEngine;
 using System.Collections;
 
@@ -8,8 +8,8 @@ namespace Valve.VR.Extras
     {
         public SteamVR_Behaviour_Pose pose;
 
-        public SteamVR_Action_Boolean leftClick = SteamVR_Input.GetBooleanActionFromPath("/actions/LaserPointers/in/LeftClick");
-        public SteamVR_Action_Boolean rightClick = SteamVR_Input.GetBooleanActionFromPath("/actions/LaserPointers/in/RightClick");
+        public SteamVR_Action_Boolean leftClick = SteamVR_Input.GetBooleanActionFromPath("/actions/Valheim/in/LeftClick");
+        public SteamVR_Action_Boolean rightClick = SteamVR_Input.GetBooleanActionFromPath("/actions/Valheim/in/RightClick");
 
         public bool active = true;
         public Color color;
@@ -94,7 +94,7 @@ namespace Valve.VR.Extras
                     Object.Destroy(collider);
                 }
             }
-            Material newMaterial = new Material(Shader.Find("Unlit/Color"));
+            Material newMaterial = new Material(ShaderLoader.GetShader("Custom/SteamVR_ClearAll"));
             newMaterial.SetColor("_Color", color);
             pointer.GetComponent<MeshRenderer>().material = newMaterial;
         }

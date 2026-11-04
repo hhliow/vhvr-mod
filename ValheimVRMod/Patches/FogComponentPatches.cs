@@ -3,6 +3,8 @@ using HarmonyLib;
 using UnityEngine;
 using UnityEngine.PostProcessing;
 using UnityEngine.Rendering;
+using ValheimVRMod.Scripts;
+using ValheimVRMod.Utilities;
 
 class FogComponentPatches
 {
@@ -27,12 +29,18 @@ class FogComponentPatches
         private static Vector3[] _frustumCornersBuffer = new Vector3[4];
         private static bool Prefix(CommandBuffer cb, FogComponent __instance)
         {
+            if (VHVRConfig.NonVrPlayer())
+            {
+                return true;
+            }
             FogModel.Settings settings = __instance.model.settings;
             Material material = __instance.context.materialFactory.Get("Hidden/Post FX/Fog");
             material.shaderKeywords = null;
-            Color value = (GraphicsUtils.isLinearColorSpace ? RenderSettings.fogColor.linear : RenderSettings.fogColor);
-            material.SetColor(Uniforms._FogColor, value);
-            material.SetFloat(Uniforms._Density, RenderSettings.fogDensity);
+
+            material.SetColor(
+                Uniforms._FogColor,
+                GraphicsUtils.isLinearColorSpace ? RenderSettings.fogColor.linear : RenderSettings.fogColor);
+            material.SetFloat(Uniforms._Density, UnderwaterEffectsUpdater.GetFogDensity());
             material.SetFloat(Uniforms._Start, RenderSettings.fogStartDistance);
             material.SetFloat(Uniforms._End, RenderSettings.fogEndDistance);
 

@@ -1,14 +1,21 @@
-using ValheimVRMod.VRCore.UI;
 using HarmonyLib;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.Reflection.Emit;
 using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
+using UnityEngine.UI;
+using Valheim.SettingsGui;
+using ValheimVRMod.VRCore;
+using ValheimVRMod.VRCore.UI;
+using ValheimVRMod.Scripts;
 using ValheimVRMod.Utilities;
 
 using static ValheimVRMod.Utilities.LogUtils;
-using System.Runtime.CompilerServices;
 
 namespace ValheimVRMod.Patches
 {
@@ -64,14 +71,52 @@ namespace ValheimVRMod.Patches
             {
                 return;
             }
-            __instance.m_smallMarker.localRotation = Quaternion.Euler(0f, 0f, -playerRot.eulerAngles.y);
+            float angle = VHVRConfig.UseVrControls() && VRPlayer.vrCam != null ? VRPlayer.vrCam.transform.rotation.eulerAngles.y : playerRot.eulerAngles.y;
+            Quaternion markerRotation = Quaternion.Euler(0f, 0f, -angle);
+            __instance.m_smallMarker.localRotation = markerRotation;
+            // The vanilla code copies the world rotation of the small marker onto the large one,
+            // but the small marker lives on the VR HUD canvas, which can have any orientation,
+            // so the large marker needs its local rotation set here too.
+            if (__instance.m_mode == Minimap.MapMode.Large)
+            {
+                __instance.m_largeMarker.localRotation = markerRotation;
+            }
             Ship controlledShip = player.GetControlledShip();
             if (controlledShip)
             {
-                __instance.m_smallShipMarker.localRotation = Quaternion.Euler(0f, 0f, -controlledShip.transform.rotation.eulerAngles.y);
+                Quaternion shipMarkerRotation = Quaternion.Euler(0f, 0f, -controlledShip.transform.rotation.eulerAngles.y);
+                __instance.m_smallShipMarker.localRotation = shipMarkerRotation;
+                if (__instance.m_mode == Minimap.MapMode.Large)
+                {
+                    __instance.m_largeShipMarker.localRotation = shipMarkerRotation;
+                }
             }
         }
     }
+
+    /**
+     * This is required because for the VRHud we move the Minimap's Canvas
+     * from the default position/rotation, so setting the absolute rotation
+     * of the wind marker doesn't work anymore. This changes it to use
+     * the local rotation instead so it'll work regardless of canvas
+     * position.
+     */
+    [HarmonyPatch(typeof(Minimap), nameof(Minimap.UpdateWindMarker))]
+    class MinimapWindMarkerPatch
+    {
+        public static bool Prefix(Minimap __instance)
+        {
+            if (VHVRConfig.NonVrPlayer())
+            {
+                return true;
+            }
+
+            Quaternion quaternion = Quaternion.LookRotation(EnvMan.instance.GetWindDir());
+            __instance.m_windMarker.localRotation = Quaternion.Euler(0f, 0f, -quaternion.eulerAngles.y);
+            return false;
+        }
+    }
+
 
     /**
     * The purpose of this patch is to update the base
@@ -84,22 +129,83 @@ namespace ValheimVRMod.Patches
     {
         public static void Postfix(ref Vector3 __result)
         {
-            if (! VHVRConfig.NonVrPlayer()) {
-                __result = SoftwareCursor.simulatedMousePosition;
+            if (VHVRConfig.NonVrPlayer()) {
+                return;
+            }
+            __result = SoftwareCursor.simulatedMousePosition;
+        }
+    }
+
+    // Same as above for ZInput.pointerPosition, which reads the Input System mouse position instead of
+    // Input.mousePosition. The minimap uses it for where to add and remove pins, and the hardware cursor it
+    // would otherwise return is locked to the screen center.
+    [HarmonyPatch(typeof(ZInput), nameof(ZInput.Internal_GetPointerPosition))]
+    class ZInput_Internal_GetPointerPosition_Patch
+    {
+        public static void Postfix(ref Vector3 __result)
+        {
+            if (VHVRConfig.NonVrPlayer() || ZInput.IsTouchActive())
+            {
+                return;
+            }
+            __result = SoftwareCursor.simulatedMousePosition;
+        }
+    }
+
+    // Raven.Talk() is the dialog the player gets by interacting with Hugin or Munin, their remarks that come
+    // on their own go through Raven.Say() directly instead.
+    [HarmonyPatch(typeof(Raven), "Talk")]
+    class Raven_Talk_Patch
+    {
+        public static bool isTalking { get; private set; }
+
+        public static void Prefix()
+        {
+            isTalking = true;
+        }
+
+        public static void Finalizer()
+        {
+            isTalking = false;
+        }
+    }
+
+    // The dialog of Hugin and Munin is shown on the VRGUI panel where the long tutorial text is comfortable
+    // to read. Everything else an NPC says, which the player did not ask for, is shown as a bubble above its
+    // head instead, which is closer to how it looks outside VR and does not cover the panel while the player
+    // is doing something else.
+    [HarmonyPatch(typeof(Chat), nameof(Chat.SetNpcText))]
+    class Chat_SetNpcText_Patch
+    {
+        public static void Postfix(GameObject talker, List<Chat.NpcText> ___m_npcTexts)
+        {
+            if (VHVRConfig.NonVrPlayer() || Raven_Talk_Patch.isTalking)
+            {
+                return;
+            }
+
+            // Chat appends the text it has just created, if any, to the end of the list.
+            Chat.NpcText npcText = ___m_npcTexts.LastOrDefault();
+            if (npcText != null && npcText.m_go == talker)
+            {
+                NpcTextBubble.Create(npcText);
             }
         }
     }
 
     // This patch replaces the method used to determine where on the UI to print
-    // the NPC text. Rather than use the transpiler I'm just replacing the whole method.
-    // The reason the original doesn't work is because it assumes the GUI is being printed as
-    // Screen Space overlay and uses a WorldToScreenSpace function that doesn't work correctly
-    // with the changes I needed to make to get the GUI working right in VR. This version isn't
-    // perfect, but it should keep the NPC text on the screen for the duration it should remain
-    // there.
+    // the NPC text (e.g. Munin/Hugin and trader dialog). Rather than use the transpiler I'm just replacing
+    // the whole method. Vanilla places the text at the talker's position projected onto the screen by the
+    // main camera. In VR that is the head camera while the text is drawn on the VRGUI panel, so the text
+    // would slide across the panel whenever the head turns. Instead the text is pinned to a fixed spot on
+    // the panel for the duration it should remain there. Texts shown as a bubble above the talker instead
+    // are positioned by NpcTextBubble and left alone here.
     [HarmonyPatch(typeof(Chat), "UpdateNpcTexts")]
     class Chat_UpdateNpcTexts_Patch
     {
+        // Height of the NPC text on the GUI canvas as a fraction of the canvas height from the bottom.
+        private const float NPC_TEXT_HEIGHT_FRACTION = 0.3f;
+
         public static bool Prefix(Chat __instance, List<Chat.NpcText> ___m_npcTexts, float dt)
         {
             if (VHVRConfig.NonVrPlayer()) {
@@ -127,29 +233,19 @@ namespace ValheimVRMod.Patches
                         }
                     }
                     Vector3 mGo = mNpcText.m_go.transform.position + mNpcText.m_offset;
-                    Vector3 screenPoint = mainCamera.WorldToScreenPoint(mGo);
-                    if (screenPoint.x < 0f || screenPoint.x > (float)mainCamera.pixelWidth || screenPoint.y < 0f || screenPoint.y > (float)mainCamera.pixelHeight || screenPoint.z < 0f)
+                    mNpcText.SetVisible(true);
+                    if (!NpcTextBubble.IsAttachedTo(mNpcText))
                     {
-                        mNpcText.SetVisible(false);
-                    }
-                    else
-                    {
-                        mNpcText.SetVisible(true);
-                        RectTransform mGui = mNpcText.m_gui.transform as RectTransform;
-                        float screenpointX = screenPoint.x;
-                        Rect rect = mGui.rect;
-                        float halfWidth = rect.width / 2f;
-                        float screenWidth = (float)Screen.width;
-                        rect = mGui.rect;
-                        screenPoint.x = Mathf.Clamp(screenpointX, halfWidth, screenWidth - halfWidth);
-                        float screenpointY = screenPoint.y;
-                        rect = mGui.rect;
-                        float halfHeight = rect.height / 2f;
-                        float screenHeight = (float)Screen.height;
-                        rect = mGui.rect;
-                        screenPoint.y = Mathf.Clamp(screenpointY, halfHeight, screenHeight - rect.height);
-                        screenPoint.z = 0f;
-                        mNpcText.m_gui.transform.position = screenPoint;
+                        // Position relative to the canvas the text is on so that it does not depend on how VRGUI
+                        // sizes and places that canvas.
+                        Canvas canvas = mNpcText.m_gui.GetComponentInParent<Canvas>();
+                        if (canvas != null)
+                        {
+                            RectTransform canvasTransform = canvas.rootCanvas.GetComponent<RectTransform>();
+                            Rect canvasRect = canvasTransform.rect;
+                            mNpcText.m_gui.transform.position = canvasTransform.TransformPoint(
+                                new Vector3(canvasRect.center.x, canvasRect.yMin + canvasRect.height * NPC_TEXT_HEIGHT_FRACTION, 0f));
+                        }
                     }
                     if (Vector3.Distance(mainCamera.transform.position, mGo) <= mNpcText.m_cullDistance)
                     {
@@ -175,6 +271,10 @@ namespace ValheimVRMod.Patches
             if (npcText != null)
             {
                 Chat_ClearNpcText_ReversePatch.ReversePatchClearNpcText(__instance, npcText);
+            }
+            if (Hud.instance.m_userHidden && ___m_npcTexts.Count > 0)
+            {
+                __instance.HideAllNpcTexts();
             }
             return false;
         }
@@ -232,6 +332,10 @@ namespace ValheimVRMod.Patches
 
         static Vector3 getRayDirectionCameraFacing()
         {
+            if (MouseAim.IsActive)
+            {
+                return MouseAim.Forward;
+            }
             Camera vrCam = CameraUtils.getCamera(CameraUtils.VR_CAMERA);
             if (vrCam == null)
             {
@@ -243,43 +347,43 @@ namespace ValheimVRMod.Patches
         [HarmonyPatch(typeof(Player), "PieceRayTest")]
         class Player_PieceRaytest_Patch
         {
-            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions, MethodBase original)
             {
                 if (VHVRConfig.NonVrPlayer()) {
                     return instructions;
                 }
-                return GetRaycastPatchedInstructions(instructions, 4, nameof(getStartingPositionPlaceMode), nameof(getRayDirectionPlaceMode));
+                return GetRaycastPatchedInstructions(instructions, 4, nameof(getStartingPositionPlaceMode), nameof(getRayDirectionPlaceMode), original);
             }
         }
 
         [HarmonyPatch(typeof(Player), "RemovePiece")]
         class Player_RemovePiece_Patch
         {
-            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions, MethodBase original)
             {
                 if (VHVRConfig.NonVrPlayer()) {
                     return instructions;
                 }
-                return GetRaycastPatchedInstructions(instructions, 5, nameof(getStartingPositionPlaceMode), nameof(getRayDirectionPlaceMode));
+                return GetRaycastPatchedInstructions(instructions, 5, nameof(getStartingPositionPlaceMode), nameof(getRayDirectionPlaceMode), original);
             }
         }
 
         [HarmonyPatch(typeof(Player), "UpdateWearNTearHover")]
         class Player_UpdateWearNTearHover_Patch
         {
-            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions, MethodBase original)
             {
                 if (VHVRConfig.NonVrPlayer()) {
                     return instructions;
                 }
-                return GetRaycastPatchedInstructions(instructions, 5, nameof(getStartingPositionPlaceMode), nameof(getRayDirectionPlaceMode));
+                return GetRaycastPatchedInstructions(instructions, 5, nameof(getStartingPositionPlaceMode), nameof(getRayDirectionPlaceMode), original);
             }
         }
 
-        static IEnumerable<CodeInstruction> GetRaycastPatchedInstructions(IEnumerable<CodeInstruction> instructions, int popOffset, string startingPosition, string rayDirection)
+        static IEnumerable<CodeInstruction> GetRaycastPatchedInstructions(IEnumerable<CodeInstruction> instructions, int popOffset, string startingPosition, string rayDirection, MethodBase original = null)
         {
             return Rayscast_VectorReplace_Transpiler.GetRaycastPatchedInstructions(instructions, typeof(Player_RaycastVector_Patches),
-                startingPosition, rayDirection, popOffset);
+                startingPosition, rayDirection, popOffset, original);
         }
 
         static IEnumerable<CodeInstruction> GetRaycastAllPatchedInstructions(IEnumerable<CodeInstruction> instructions, int popOffset, string startingPosition, string rayDirection)
@@ -301,9 +405,10 @@ namespace ValheimVRMod.Patches
                                                                                 Type methodType,
                                                                                 string startingPosition,
                                                                                 string rayDirection,
-                                                                                int popOffset)
+                                                                                int popOffset,
+                                                                                MethodBase original = null)
             {
-                return GetPatchedInstructions(instructions, methodType, startingPosition, rayDirection, popOffset, raycastMethod);
+                return GetPatchedInstructions(instructions, methodType, startingPosition, rayDirection, popOffset, raycastMethod, original);
             }
 
             public static IEnumerable<CodeInstruction> GetRaycastAllPatchedInstructions(IEnumerable<CodeInstruction> instructions,
@@ -320,7 +425,8 @@ namespace ValheimVRMod.Patches
                                                                                 string startingPosition,
                                                                                 string rayDirection,
                                                                                 int popOffset,
-                                                                                MethodInfo raycastMethod)
+                                                                                MethodInfo raycastMethod,
+                                                                                MethodBase patchedMethod = null)
             {
                 if (raycastMethod == null)
                 {
@@ -346,7 +452,12 @@ namespace ValheimVRMod.Patches
                 }
                 if (!foundIndex)
                 {
-                    LogError("Could not find Raycast Method call.");
+                    // Seen when another mod's transpiler on the same method ran first and replaced the call (Ravengates
+                    // swaps it in RemovePiece and UpdateWearNTearHover for a ray that reaches through its gates): the
+                    // method then keeps aiming with the head instead of the hand.
+                    LogError("Could not find Raycast Method call" +
+                        (patchedMethod == null ? "" : " in " + patchedMethod.DeclaringType?.Name + "." + patchedMethod.Name) +
+                        "; another patch may have replaced it, so this ray stays on the head instead of the VR hand.");
                     return instructions;
                 }
                 for (int i = 0; i < original.Count; i++)
@@ -376,7 +487,7 @@ namespace ValheimVRMod.Patches
         // This patch is used to add a duplicate of whatever
         // HUD is added to the base class to the EnemyHudManager
         // mirror class.
-        [HarmonyPatch(typeof(EnemyHud), "ShowHud")]
+        [HarmonyPatch(typeof(EnemyHud), nameof(EnemyHud.ShowHud))]
         class EnemyHud_ShowHud_Patch
         {
             public static void Prefix(Character c, bool isMount, GameObject ___m_baseHudPlayer, GameObject ___m_baseHud, GameObject ___m_baseHudMount, GameObject ___m_baseHudBoss)
@@ -388,6 +499,19 @@ namespace ValheimVRMod.Patches
             }
         }
 
+        [HarmonyPatch(typeof(EnemyHud), "RemoveCharacterHud")]
+        class EnemyHud_RemoveCharacterHud_Patch
+        {
+            public static void Prefix(Character character)
+            {
+                if (VHVRConfig.NonVrPlayer())
+                {
+                    return;
+                }
+                EnemyHudManager.instance.RemoveEnemyHud(character);
+            }
+        }
+
         // The UpdateHuds method is responsible for updating values
         // of any active Enemy huds (ie, health, level, alert status etc) as
         // well as removing any huds that should no longer active. Rather
@@ -395,12 +519,10 @@ namespace ValheimVRMod.Patches
         // method calls to our EnemyHudManager class to update the values
         // at the right points. This requires the use of a transpiler to insert
         // the method calls at the right place in the code.
-        [HarmonyPatch(typeof(EnemyHud), "UpdateHuds")]
+        [HarmonyPatch(typeof(EnemyHud), nameof(EnemyHud.UpdateHuds))]
         class EnemyHud_UpdateHuds_Patch
         {
             private static FieldInfo guiField = AccessTools.Field(typeof(EnemyHud.HudData), nameof(EnemyHud.HudData.m_gui));
-            private static MethodInfo destroyMethod =
-                AccessTools.Method(typeof(UnityEngine.Object), "Destroy", new Type[] { typeof(UnityEngine.Object) });
             private static MethodInfo getHealthPercentageMethod =
                 AccessTools.Method(typeof(Character), nameof(Character.GetHealthPercentage));
             private static MethodInfo getLevelMethod =
@@ -416,7 +538,7 @@ namespace ValheimVRMod.Patches
             private static MethodInfo enemyHudRemoveMethod =
                 AccessTools.Method(AccessTools.Field(typeof(EnemyHud), nameof(EnemyHud.m_huds)).FieldType, "Remove", new Type[] { typeof(Character) });
             private static MethodInfo worldToScreenPointMethod =
-                AccessTools.Method(typeof(Camera), nameof(Camera.WorldToScreenPoint), new Type[] { typeof(Vector3) });
+                AccessTools.Method(typeof(Utils), nameof(Utils.WorldToScreenPointScaled), new Type[] { typeof(Camera), typeof(Vector3) });
 
             private static bool patchedSetActiveTrue = false;
             private static bool patchedSetActiveFalse = false;
@@ -432,12 +554,6 @@ namespace ValheimVRMod.Patches
                 if (c is null) Debug.LogError($"ASSERT FAILED: Character c is null in {caller}");
             }
 
-            private static void DestroyHud(Character c)
-            {
-                AssertCharacter(c);
-                EnemyHudManager.instance.DestroyHudGui(c);
-            }
-
             // Some wrapper methods to use as the Transpiler's Call targets
             private static void RemoveHud(Character c)
             {
@@ -445,10 +561,10 @@ namespace ValheimVRMod.Patches
                 EnemyHudManager.instance.RemoveEnemyHud(c);
             }
 
-            private static float UpdateHealth(float health, Character c)
+            private static float UpdateHealth(float health, Character c, Player p)
             {
                 AssertCharacter(c);
-                EnemyHudManager.instance.UpdateHealth(c, health);
+                EnemyHudManager.instance.UpdateHealth(p, c, health);
                 // Return health so that it gets put back onto the
                 // evaluation stack right after we use it
                 return health;
@@ -535,7 +651,6 @@ namespace ValheimVRMod.Patches
                 var patched = new List<CodeInstruction>();
                 for (int i = 0; i < original.Count; i++) {
                     patched.Add(original[i]);
-                    MaybeAddDestroyHudInstructions(original, ref patched, i);
                     MaybeAddUpdateHealthInstructions(original, ref patched, i);
                     MaybeAddUpdateLevelInstructions(original, ref patched, i);
                     MaybeAddAIAlertnessUpdateInstructions(original, ref patched, i);
@@ -575,18 +690,6 @@ namespace ValheimVRMod.Patches
                 }
             }
 
-            private static void MaybeAddDestroyHudInstructions(List<CodeInstruction> original, ref List<CodeInstruction> patched, int i)
-            {
-                var instruction = original[i];
-                if (instruction.Calls(destroyMethod))
-                {
-                    // The current hud is being destroyed here so
-                    // lets destroy out mirror gui too.
-                    LoadCharacterField(ref patched);
-                    patched.Add(CodeInstruction.Call(typeof(EnemyHud_UpdateHuds_Patch), nameof(DestroyHud)));
-                }
-            }
-
             private static void MaybeAddUpdateHealthInstructions(List<CodeInstruction> original, ref List<CodeInstruction> patched, int i)
             {
                 var instruction = original[i];
@@ -595,6 +698,7 @@ namespace ValheimVRMod.Patches
                     // Health percentage method just called, so health percentage is on eval
                     // stack. Load the character field and then call UpdateHealth
                     LoadCharacterField(ref patched);
+                    patched.Add(new CodeInstruction(OpCodes.Ldarg_1));
                     patched.Add(CodeInstruction.Call(typeof(EnemyHud_UpdateHuds_Patch), nameof(UpdateHealth)));
                 }
             }
@@ -629,9 +733,9 @@ namespace ValheimVRMod.Patches
                 var instruction = original[i];
                 if (instruction.Calls(getMaxStaminaMethod))
                 {
-                    // MaxStamina was just called, so it is on the eval stack. "GetStamina" was stored into V_11.
+                    // MaxStamina was just called, so it is on the eval stack. "GetStamina" was stored into V_12.
                     // Before storing the value of GetStamina we detour to UpdateMound
-                    patched.Add(new CodeInstruction(OpCodes.Ldloc_S, 11)); // ldloc.s V_9
+                    patched.Add(new CodeInstruction(OpCodes.Ldloc_S, 12)); // ldloc.s V_12
                     LoadCharacterField(ref patched);
                     patched.Add(CodeInstruction.Call(typeof(EnemyHud_UpdateHuds_Patch), nameof(UpdateMount)));
                 }
@@ -742,7 +846,7 @@ namespace ValheimVRMod.Patches
             playerRot = player.transform.rotation;
         }
     }
-    
+
     // remove stupid keyboard/mouse hints:
     // for some reason after Hearth&Home "Awake" isn't called on the cloned hud, so to be sure we destroy it in Update
     [HarmonyPatch(typeof(KeyHints), "Update")]
@@ -759,30 +863,112 @@ namespace ValheimVRMod.Patches
     [HarmonyPatch(typeof(FejdStartup), "SetupGui")]
     class PatchFejd {
         public static void Postfix(FejdStartup __instance) {
-            if (VHVRConfig.NonVrPlayer()) {
-                return;
-            }
-            ConfigSettings.instantiate(__instance.m_mainMenu.transform.Find("MenuList"), __instance.m_mainMenu.transform, __instance.m_settingsPrefab);
+            // Also shown in flatscreen, e.g. so that settings can be read through desktop translation tools.
+            ConfigSettings.instantiate(__instance.m_mainMenu.transform.Find("MenuList"), __instance.m_mainMenu.transform, __instance.m_settingsPrefab, enableTransformButtons: false, isInGame: false);
         }
     }
     
     [HarmonyPatch(typeof(Menu), "Start")]
     class PatchMenu {
         public static void Postfix(Menu __instance) {
-            if (VHVRConfig.NonVrPlayer()) {
-                return;
-            }
-            ConfigSettings.instantiate(__instance.m_menuDialog, __instance.transform, __instance.m_settingsPrefab);
+            // Also shown in flatscreen, but without the transform buttons, which position HUD panels with the VR hands.
+            ConfigSettings.instantiate(__instance.m_menuDialog, __instance.transform, __instance.m_settingsPrefab, enableTransformButtons: !VHVRConfig.NonVrPlayer(), isInGame: true);
         }
     }    
     
-    [HarmonyPatch(typeof(Settings), "UpdateBindings")]
+    [HarmonyPatch(typeof(KeyboardMouseSettings), "UpdateBindings")]
     class PatchEndBindKey {
-        public static void Postfix() {
+        public static void Postfix(KeyboardMouseSettings __instance) {
+            ConfigSettings.keyboardMouseSettings = __instance;
             if (VHVRConfig.NonVrPlayer()) {
                 return;
             }
             ConfigSettings.updateBindings();
+        }
+    }
+
+    [HarmonyPatch(typeof(KeyboardMouseSettings), nameof(KeyboardMouseSettings.Update))]
+    class PatchKeyboardMouseSettingsUpdate
+    {
+        public static bool Prefix(KeyboardMouseSettings __instance)
+        {
+            return !ConfigSettings.isVHVRClone(__instance);
+        }
+    }
+
+    [HarmonyPatch(typeof(KeyboardMouseSettings), nameof(KeyboardMouseSettings.OnDestroy))]
+    class PatchKeyboardMouseSettingsDestroy
+    {
+        public static bool Prefix(KeyboardMouseSettings __instance)
+        {
+            return !ConfigSettings.isVHVRClone(__instance);
+        }
+    }
+
+    // The VHVR settings dialog is a clone of the vanilla Settings object, so its Awake overwrites
+    // the static Settings.m_instance singleton. createModSettings() then destroys the clone's tab
+    // buttons and their key hints, which is what Settings.m_tabKeyHints points at. ZInput.ChangeLayout()
+    // reaches OnInputLayoutChanged() through that hijacked singleton (the vanilla gamepad settings tab
+    // triggers it on back), where SetActive() on the destroyed hints throws. The clone has no vanilla
+    // tabs to update anyway, so skip it.
+    [HarmonyPatch(typeof(Settings), "OnInputLayoutChanged")]
+    class PatchSettingsOnInputLayoutChanged
+    {
+        public static bool Prefix(Settings __instance)
+        {
+            // Destroying the clone does not clear Settings.m_instance, so the singleton can still
+            // hold a destroyed one. Unity reports that as null while the managed call still lands
+            // here, and GetComponentInParent() below would throw on it, so check for it first.
+            return __instance != null && !ConfigSettings.isVHVRClone(__instance);
+        }
+    }
+
+    // The clone's Settings.Awake() fills Settings.SettingsTabs from the vanilla tabs and subscribes to
+    // TabHandler.ActiveTabChanged. createModSettings() then replaces the tabs with its own, which are more than
+    // the vanilla ones and are no ISettingsTab, so ActiveTabChanged() would open a hidden vanilla tab for the low
+    // indices and index out of range for the high ones.
+    [HarmonyPatch(typeof(Settings), "ActiveTabChanged")]
+    class Settings_ActiveTabChanged_VhvrSettingsPatch
+    {
+        static bool Prefix(Settings __instance)
+        {
+            return !ConfigSettings.isVHVRClone(__instance);
+        }
+    }
+
+    // The menu button is ignored while the VHVR settings dialog is open, as vanilla ignores it while its own settings
+    // are open (Menu.m_settingsInstance), which the VHVR dialog is not. Otherwise the menu would hide and show again
+    // with the dialog left on top of it. The dialog is closed with its OK and Back buttons, so that a stray press
+    // cannot throw away the edits. The button still closes the Mods window, see VRGUI.Update().
+    // Only the in-game menu: the main menu has no Menu.
+    [HarmonyPatch(typeof(Menu), nameof(Menu.Update))]
+    class Menu_Update_VhvrSettingsPatch
+    {
+        static bool Prefix()
+        {
+            return !ConfigSettings.IsOpen || !isMenuButtonDown();
+        }
+
+        // The buttons that Menu.Update() toggles the menu with.
+        private static bool isMenuButtonDown()
+        {
+            return ZInput.GetKeyDown(KeyCode.Escape) || ZInput.GetButtonDown("JoyMenu") || ZInput.GetButtonDown("JoyButtonB");
+        }
+    }
+
+    // The dialog inherits Settings.Update(), which backs out on Escape through Settings.OnBack(). That destroys the
+    // dialog without setting ConfigSettings.doSave, which still holds the last close's choice, so it could save.
+    [HarmonyPatch(typeof(Settings), nameof(Settings.OnBack))]
+    class Settings_OnBack_VhvrSettingsPatch
+    {
+        static bool Prefix(Settings __instance)
+        {
+            if (__instance == null || !ConfigSettings.isVHVRClone(__instance))
+            {
+                return true;
+            }
+            ConfigSettings.Close(save: false);
+            return false;
         }
     }
 
@@ -791,14 +977,16 @@ namespace ValheimVRMod.Patches
     {
         static bool Prefix(HotkeyBar __instance)
         {
+            if (VHVRConfig.NonVrPlayer())
+            {
+                return true;
+            }
             if (VHVRConfig.HideHotbar())
             {
                 clearHotbar(__instance);
                 return false;
-            } else
-            {
-                return true;
             }
+            return true;
         }
 
         private static void clearHotbar(HotkeyBar hotkeyBar)
@@ -808,6 +996,444 @@ namespace ValheimVRMod.Patches
                 UnityEngine.Object.Destroy(element.m_go);
             }
             hotkeyBar.m_elements.Clear();
+        }
+    }
+    [HarmonyPatch(typeof(Hud),nameof(Hud.UpdateStamina))]
+    class StaminaPatch
+    {
+        private static void Postfix(RectTransform ___m_staminaBar2Root, float ___m_staminaHideTimer, Animator ___m_staminaAnimator)
+        {
+            if (!VHVRConfig.UseVrControls())
+            {
+                return;
+            }
+            if (VHVRConfig.AlwaysShowStamina() || SettingCallback.configRunning)
+            {
+                ___m_staminaAnimator.SetBool("Visible", true);
+            }
+            if (VHVRConfig.StaminaPanelPlacement() == "Legacy" || VHVRConfig.UseLegacyHud()) 
+            {
+                return;
+            }
+            RectTransform rectTransform = ___m_staminaBar2Root.transform as RectTransform;
+            rectTransform.anchoredPosition = new Vector2(0f, 130f);
+        }
+    }
+    //Make the message ignore the fishing distance meter when the fishing float is being reeled
+    [HarmonyPatch(typeof(FishingFloat), "Message")]
+    class PatchFishingText
+    {
+        public static bool Prefix(FishingFloat __instance,string msg)
+        {
+            if (VHVRConfig.NonVrPlayer()||!__instance||!FishingManager.instance)
+            {
+                return true;
+            }
+
+            var regex = "[0-9]+[mM]";
+            if (Regex.IsMatch(msg, regex))
+            {
+                return false;
+            }
+
+            return true;
+        }
+    }
+    //Make the message ignore the fishing distance meter when the fishing float is just got into water
+    [HarmonyPatch(typeof(Player), "Message")]
+    class PatchFishingTextPlayer
+    {
+        public static bool Prefix(Player __instance, string msg)
+        {
+            if (VHVRConfig.NonVrPlayer() || !__instance || __instance != Player.m_localPlayer || !FishingManager.instance) 
+            {
+                return true;
+            }
+
+            var regex = "[0-9]+[mM]";
+            if (Regex.IsMatch(msg, regex))
+            {
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    // Shows cinematics on the VRGUI instead of on CinematicsManager's own flat camera, which would also
+    // disable the VR camera while playing. This includes the startup intro which IntroCinematicVrDelayPatch
+    // holds back until the VRGUI is ready to show it.
+    [HarmonyPatch(typeof(CinematicsManager), nameof(CinematicsManager.Play), new Type[] { typeof(CinematicsManager.VideoEntry), typeof(CinematicsManager.VideoCompleteAction) })]
+    class CinematicsManager_Play_Patch
+    {
+        // Deliberately looser than VRGUI.isReadyToShowCinematic, which the intro gate uses: this has to be true
+        // whenever VHVR owns the camera, even in the moments when the GUI panel is not up, because otherwise
+        // Play() would disable the camera the headset renders with and VRPlayer.enableCameras() would rebuild
+        // it. Answering true too early only costs a badly laid out video for a frame.
+        private static bool ShouldPatch()
+        {
+            return !VHVRConfig.NonVrPlayer() && VRPlayer.instance != null && CinematicsManager.s_instance != null;
+        }
+
+        static void Prefix(CinematicsManager.VideoEntry video)
+        {
+            if (!ShouldPatch() || video == null)
+            {
+                return;
+            }
+            var clip = video.m_videoClip != null ? video.m_videoClip : video.m_videoClipLow;
+            if (clip == null)
+            {
+                return;
+            }
+            // Set up before vanilla starts the video player.
+            VRCinematicScreen.OnPlay(CinematicsManager.s_instance, clip);
+        }
+
+        static void Postfix(bool __result)
+        {
+            if (!__result || !ShouldPatch())
+            {
+                return;
+            }
+            // Play() still enables CinematicsManager's own camera, which would render over the VRGUI. No camera
+            // needs restoring: the transpiler below leaves m_mainCamera null, so Play() disabled none, and Stop()
+            // is fine with m_camera already being disabled.
+            CinematicsManager.s_instance.m_camera.enabled = false;
+        }
+
+        // Hides the main camera from Play(), which stores it in m_mainCamera and disables it for the length of
+        // the cinematic (Stop() enables it again). Once VR is running Utils.GetMainCamera() is the VR camera, so
+        // vanilla would disable the camera the headset renders with, and VRPlayer.enableCameras() reacts to a
+        // disabled VR camera by rebuilding it and destroying the follow camera along with it. Both Play() and
+        // Stop() null check m_mainCamera, so leaving it null means neither touches any camera at all, and the
+        // video goes to the VRGUI instead. This returns the camera unchanged only in flat screen mode or after
+        // VR failed to initialize, in which case the startup intro plays flat with the vanilla camera.
+        private static Camera GetMainCameraForCinematic()
+        {
+            return ShouldPatch() ? null : Utils.GetMainCamera();
+        }
+
+        private static readonly MethodInfo getMainCamera =
+            AccessTools.Method(typeof(Utils), nameof(Utils.GetMainCamera));
+
+        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+        {
+            var patched = new List<CodeInstruction>();
+            int patchedCount = 0;
+            foreach (var instruction in instructions)
+            {
+                if (instruction.Calls(getMainCamera))
+                {
+                    patched.Add(
+                        CodeInstruction.Call(
+                            typeof(CinematicsManager_Play_Patch), nameof(GetMainCameraForCinematic)));
+                    patchedCount++;
+                }
+                else
+                {
+                    patched.Add(instruction);
+                }
+            }
+            if (patchedCount != 1)
+            {
+                LogError(
+                    "CinematicsManager.Play: patched " + patchedCount +
+                    " of the 1 expected Utils.GetMainCamera() call, the VR camera may be disabled by cinematics.");
+            }
+            return patched;
+        }
+    }
+
+    [HarmonyPatch(typeof(FejdStartup), "LoadMainScene")]
+    class PatchStartup1
+    {
+        public static void Prefix()
+        {
+            if (VHVRConfig.NonVrPlayer())
+            {
+                return;
+            }
+            SoftwareCursor.simulatedScreenSize = new Vector3(Screen.width, Screen.height);
+            
+            VRGUI.originalResolution = new Vector2(Screen.width, Screen.height);
+            VRGUI.originalFullScreen = Screen.fullScreen;
+            VRGUI.isResized = true;
+            if (VHVRConfig.GetUiPanelResoCompatibility())
+            {
+                SoftwareCursor.simulatedScreenSize = new Vector3(VHVRConfig.GetUiPanelResolution().x, VHVRConfig.GetUiPanelResolution().y);
+                Screen.SetResolution((int)VHVRConfig.GetUiPanelResolution().x, (int)VHVRConfig.GetUiPanelResolution().y, false);
+            }
+        }
+    }
+    [HarmonyPatch(typeof(Game), "Update")]
+    class PatchStartup2
+    {
+        public static void Postfix()
+        {
+            if (VHVRConfig.NonVrPlayer())
+            {
+                return;
+            }
+            if (VRGUI.isResized)
+            {
+                if (SceneManager.GetActiveScene().name == "main")
+                {
+                    if (SceneManager.GetActiveScene().isLoaded)
+                    {
+                        if (VHVRConfig.GetUiPanelResoCompatibility())
+                        {
+                            Screen.SetResolution((int)VRGUI.originalResolution.x, (int)VRGUI.originalResolution.y, VRGUI.originalFullScreen);
+                        }
+                        VRGUI.isResized = false;
+                    }
+                }
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Utils), "ClampUIToScreen")]
+    class PatchTooltip
+    {
+        public static bool Prefix(RectTransform transform)
+        {
+            if (VHVRConfig.NonVrPlayer())
+            {
+                return true;
+            }
+            Vector3[] array = new Vector3[4];
+            transform.GetWorldCorners(array);
+            if (Utils.GetMainCamera() == null)
+            {
+                return false;
+            }
+            float num = 0f;
+            float num2 = 0f;
+            if (array[2].x > (float)VRGUI.GUI_DIMENSIONS.x)
+            {
+                num -= array[2].x - (float)VRGUI.GUI_DIMENSIONS.x;
+            }
+            if (array[0].x < 0f)
+            {
+                num -= array[0].x;
+            }
+            if (array[2].y > (float)VRGUI.GUI_DIMENSIONS.y)
+            {
+                num2 -= array[2].y - (float)VRGUI.GUI_DIMENSIONS.y;
+            }
+            if (array[0].y < 0f)
+            {
+                num2 -= array[0].y;
+            }
+            Vector3 position = transform.position;
+            position.x += num;
+            position.y += num2;
+            transform.position = position;
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(Minimap), "ScreenToWorldPoint")]
+    class PatchMapPinMouseFix
+    {
+        public static void Prefix(Minimap __instance, ref Vector3 mousePos)
+        {
+            if (VHVRConfig.NonVrPlayer() || __instance.m_selectedType == Minimap.PinType.Death)
+            {
+                return;
+            }
+            // Minimap.ScreenToWorldPoint resolves the point with a null camera, which makes it treat
+            // mousePos as raw world coordinates rather than screen coordinates. Project the cursor onto
+            // the map rect through the canvas camera and hand over the resulting world point, so the
+            // click lands under the cursor no matter how the window resolution, the captured screen size
+            // and the configured UI panel resolution relate to each other.
+            RectTransform mapRect = __instance.m_mapImageLarge.transform as RectTransform;
+            Canvas canvas = mapRect == null ? null : mapRect.GetComponentInParent<Canvas>();
+            Camera camera = canvas == null ? null : canvas.rootCanvas.worldCamera;
+            if (camera == null)
+            {
+                mousePos = SoftwareCursor.ScaledMouseVector();
+                return;
+            }
+            Vector3 worldPoint;
+            if (RectTransformUtility.ScreenPointToWorldPointInRectangle(
+                mapRect, SoftwareCursor.simulatedMousePosition, camera, out worldPoint))
+            {
+                mousePos = worldPoint;
+            }
+        }
+    }
+
+    // The map shader leaves the Mistlands transparent on the VR GUI panel.
+    [HarmonyPatch(typeof(Minimap), "Awake")]
+    class Minimap_Awake_AlphaPatch
+    {
+        static void Postfix(Minimap __instance)
+        {
+            if (__instance.m_mapImageLarge != null)
+            {
+                GuiAlphaRestorer.RestoreRect(__instance.m_mapImageLarge.rectTransform);
+            }
+        }
+    }
+
+    // The item icons leave the world showing through their shadows on the VR GUI panel.
+    [HarmonyPatch(typeof(InventoryGui), "Awake")]
+    class InventoryGui_Awake_AlphaPatch
+    {
+        private const string PANEL_NAME = "Bkg";
+
+        static void Postfix(InventoryGui __instance)
+        {
+            GuiAlphaRestorer.RestorePanel(__instance.m_player.transform, PANEL_NAME);
+            GuiAlphaRestorer.RestorePanel(__instance.m_container.transform, PANEL_NAME);
+            GuiAlphaRestorer.RestorePanel(__instance.m_crafting.transform, PANEL_NAME);
+            GuiAlphaRestorer.RestorePanel(__instance.m_info.transform, PANEL_NAME);
+            GuiAlphaRestorer.RestorePanel(__instance.m_skillsDialog.transform, "SkillsFrame/bkg");
+            GuiAlphaRestorer.RestorePanel(__instance.m_trophiesPanel.transform, "TrophiesFrame/border (1)");
+            GuiAlphaRestorer.RestorePanel(__instance.m_achievementsPanel.transform, "AchFrame/border (1)");
+            GuiAlphaRestorer.RestorePanel(__instance.m_achievementsPanel.transform, "AchDetails/border");
+        }
+    }
+
+    // As do the piece icons of the build menu.
+    [HarmonyPatch(typeof(BuildUi), "Awake")]
+    class BuildUi_Awake_AlphaPatch
+    {
+        static void Postfix(BuildUi __instance)
+        {
+            GuiAlphaRestorer.RestorePanel(__instance.transform, "bar/SelectionWindow/Background");
+        }
+    }
+
+    [HarmonyPatch(typeof(InventoryGui), "UpdateItemDrag")]
+    class PatchItemDragMouseFix
+    {
+        public static bool Prefix(InventoryGui __instance, GameObject ___m_dragGo)
+        {
+            if (VHVRConfig.NonVrPlayer())
+            {
+                return true;
+            }
+            if (__instance.m_dragGo)
+            {
+                // The nudge away from the cursor tip is given in cursor coordinates and projected with
+                // it, so the ghost stays at the same visual offset whatever the canvas scale is.
+                __instance.m_dragGo.transform.position =
+                    SoftwareCursor.CursorWorldPosition(__instance.m_dragGo.transform, new Vector2(10, 50));
+                Image component = __instance.m_dragGo.transform.Find("icon").GetComponent<Image>();
+                TMPro.TMP_Text component2 = __instance.m_dragGo.transform.Find("name").GetComponent<TMPro.TMP_Text>();
+                TMPro.TMP_Text component3 = __instance.m_dragGo.transform.Find("amount").GetComponent<TMPro.TMP_Text>();
+                component.sprite = __instance.m_dragItem.GetIcon();
+                component2.text = __instance.m_dragItem.m_shared.m_name;
+                component3.text = ((__instance.m_dragAmount > 1) ? __instance.m_dragAmount.ToString() : "");
+                if (Input.GetMouseButton(1))
+                {
+                    __instance.SetupDragItem(null, null, 1);
+                }
+            }
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(UITooltip), "LateUpdate")]
+    class PatchItemTooltipHover
+    {
+        public static bool Prefix(UITooltip __instance)
+        {
+            if (VHVRConfig.NonVrPlayer())
+            {
+                return true;
+            }
+            if (UITooltip.m_current == __instance && !UITooltip.m_tooltip.activeSelf)
+            {
+                __instance.m_showTimer += Time.deltaTime;
+                if (__instance.m_showTimer > 0.5f || (ZInput.IsGamepadActive() && !ZInput.IsMouseActive()))
+                {
+                    UITooltip.m_tooltip.SetActive(true);
+                }
+            }
+            if (UITooltip.m_current == __instance)
+            {
+                if (UITooltip.m_hovered == null)
+                {
+                    UITooltip.HideTooltip();
+                    return false;
+                }
+                if (!CursorIsWithinHovered(UITooltip.m_hovered))
+                {
+                    // Deliberately not HideTooltip(): that clears m_current, and Unity fires no new
+                    // OnPointerEnter while the pointer stays within the same element, so the tooltip
+                    // could never re-appear. Reset instead so it re-arms when the cursor comes back.
+                    __instance.m_showTimer = 0f;
+                    UITooltip.m_tooltip.SetActive(false);
+                    return false;
+                }
+                UITooltip.m_tooltip.transform.position =
+                    SoftwareCursor.CursorWorldPosition(UITooltip.m_tooltip.transform, Vector2.zero);
+                Utils.ClampUIToScreen(UITooltip.m_tooltip.transform.GetChild(0).transform as RectTransform);
+            }
+            return false;
+        }
+
+        // Tested against the canvas camera and the same cursor value that Input.mousePosition is
+        // patched to return, so this agrees with the hover the EventSystem itself resolved. Passing
+        // no camera instead compares against raw world coordinates, which only lines up when the
+        // canvas position, the captured screen size and the UI panel resolution all coincide.
+        // The UITooltip component is also not necessarily on the object whose rect covers the
+        // visible hover area, so accept the cursor being over any rect below it.
+        private static bool CursorIsWithinHovered(GameObject hovered)
+        {
+            var canvas = hovered.GetComponentInParent<Canvas>();
+            var camera = canvas == null ? null : canvas.rootCanvas.worldCamera;
+            foreach (var rectTransform in hovered.GetComponentsInChildren<RectTransform>())
+            {
+                if (rectTransform != null &&
+                    RectTransformUtility.RectangleContainsScreenPoint(
+                        rectTransform, SoftwareCursor.simulatedMousePosition, camera))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    // Vanilla draws damage texts on the HUD canvas, at the screen position of the main camera, which only makes them
+    // show up in odd places on the VR GUI panel. VR players get them from VRDamageTexts instead, or not at all if
+    // they are disabled.
+    [HarmonyPatch(typeof(DamageText), "AddInworldText")]
+    class PatchDamageText
+    {
+        public static bool Prefix()
+        {
+            return VHVRConfig.NonVrPlayer() || VHVRConfig.ShowDamageText();
+        }
+
+        public static void Postfix(DamageText __instance, bool mySelf)
+        {
+            if (VHVRConfig.NonVrPlayer() || !VHVRConfig.ShowDamageText() || __instance.m_worldTexts.Count == 0)
+            {
+                return;
+            }
+
+            var lastText = __instance.m_worldTexts.Last();
+            VRDamageTexts.Pool().CreateText(lastText.m_textField, lastText.m_worldPos, mySelf, lastText.m_duration);
+            UnityEngine.Object.Destroy(lastText.m_gui);
+            __instance.m_worldTexts.Remove(lastText);
+        }
+    }
+    [HarmonyPatch(typeof(Player), nameof(Player.OnDeath))]
+    class PatchDeath
+    {
+        public static void Postfix(Player __instance)
+        {
+            if (VHVRConfig.NonVrPlayer() || __instance != Player.m_localPlayer)
+            {
+                return;
+            }
+            VRHud.instance.resetHUDDeath();
+            VRGUI.triggerGuiRecenter();
         }
     }
 }

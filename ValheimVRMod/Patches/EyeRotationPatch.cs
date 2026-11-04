@@ -1,9 +1,11 @@
+using ValheimVRMod.VRCore.Backends;
 using HarmonyLib;
 using UnityEngine;
 using ValheimVRMod.VRCore;
 using ValheimVRMod.Utilities;
 using System.Reflection;
 using System.Collections.Generic;
+using ValheimVRMod.Scripts;
 
 namespace ValheimVRMod.Patches
 {
@@ -24,9 +26,13 @@ namespace ValheimVRMod.Patches
     [HarmonyPatch(typeof(Player), nameof(Player.SetMouseLook))]
     class Player_SetMouseLook_Patch
     {
+        public static float? previousTrackedLocalAngle;
+        public static Quaternion lastAttachRot;
+        public static GameObject headLookRef;
+        public static bool wasAttached;
 
-        public static float? previousHeadLocalRotation;
-        public static float? lastAttachmentHeading;
+        static Vector3 smoothCamUp;
+        static Vector3 smoothCamUpVel;
 
         public static void Prefix(Player __instance, ref Quaternion ___m_lookYaw, CraftingStation ___m_currentStation)
         {
@@ -34,48 +40,114 @@ namespace ValheimVRMod.Patches
                 __instance != Player.m_localPlayer ||
                 !VRPlayer.attachedToPlayer ||
                 !VRPlayer.inFirstPerson ||
+                Game.IsPaused() ||
+                VRPlayer.ShouldPauseMovement ||
                 !VHVRConfig.UseLookLocomotion() ||
                 ___m_currentStation != null /* Not Crafting */)
             {
+                // The heading keeps moving while this is inactive, so drop the stored angle: resuming
+                // against a stale one would apply everything that moved in the meantime as a single jump.
+                previousTrackedLocalAngle = null;
                 return;
             }
 
+            if (!headLookRef)
+            {
+                headLookRef = new GameObject();
+            }
             /* Attached to something, like boat controls */
-            if(__instance.IsAttached() && (VHVRConfig.ViewTurnWithMountedAnimal() || !__instance.IsRiding()))
+            if (__instance.IsAttached())
             {
-                //Apply ship rotation
-                if(__instance.m_attached && __instance.m_attachPoint)
+                if (__instance.m_attached && __instance.m_attachPoint)
                 {
-                    // Rotate VRPlayer together with delta ship rotation
-                    var newPlayerHeading = __instance.m_attachPoint.forward;
-                    newPlayerHeading.y = 0;
-                    newPlayerHeading.Normalize();
-                    float newHeadingRotation = Quaternion.LookRotation(newPlayerHeading, __instance.transform.up).eulerAngles.y;
-                    if(lastAttachmentHeading.HasValue)
-                        ___m_lookYaw *= Quaternion.AngleAxis(newHeadingRotation - lastAttachmentHeading.Value, Vector3.up);
-                    lastAttachmentHeading = newHeadingRotation;
+                    if (VHVRConfig.IsShipImmersiveCamera() && !__instance.IsRiding() && !VRPlayer.inImmersiveDodge)
+                    {
+                        // Rotate VRPlayer together with delta ship rotation
+                        headLookRef.transform.SetParent(__instance.m_attachPoint);
+                        if (!wasAttached)
+                        {
+                            headLookRef.transform.position = __instance.transform.position;
+                            __instance.m_lookYaw = Quaternion.LookRotation(__instance.m_body.transform.forward, __instance.m_attachPoint.up);
+                            headLookRef.transform.rotation = __instance.transform.rotation;
+                            lastAttachRot = headLookRef.transform.rotation;
+                            smoothCamUp = __instance.m_attachPoint.up;
+                            wasAttached = true;
+                        }
+                        else
+                        {
+                            var newPlayerRot = headLookRef.transform.rotation;
+                            __instance.m_body.transform.rotation *= Quaternion.Inverse(lastAttachRot) * newPlayerRot;
+                            smoothCamUp = Vector3.SmoothDamp(smoothCamUp, __instance.m_attachPoint.up, ref smoothCamUpVel, 0.2f, 2f, Time.deltaTime);
+                            __instance.m_lookYaw = Quaternion.LookRotation(__instance.m_body.transform.forward, smoothCamUp);
+                            headLookRef.transform.rotation = __instance.m_body.transform.rotation;
+                            lastAttachRot = headLookRef.transform.rotation;
+                        }
+                    }
+                    else if (__instance.IsAttachedToShip())
+                    {
+                        // Remove any tilt from the rotation.
+                        var facing = VRPlayer.instance.transform.forward;
+                        facing.y = 0;
+                        VRPlayer.instance.transform.rotation = Quaternion.LookRotation(facing);
+                    }
+                    else if (__instance.IsRiding() && !VHVRConfig.ViewTurnWithMountedAnimal())
+                    {
+                        VRPlayer.instance.transform.rotation = Player_Rotation_Patch.attachmentIndependentRoomRotation;
+                    }
                 }
+                previousTrackedLocalAngle = null;
+                return;
+            }
+            else
+            {
+                headLookRef.transform.parent = null;
+                wasAttached = false;
+            }
+
+            if (!Player_Rotation_Patch.ShouldFaceLookDirection(__instance) || !VHVRConfig.UseVrControls())
+            {
+                previousTrackedLocalAngle = null;
                 return;
             }
 
-
-            // Calculate the current head local rotation
-            float currentHeadLocalRotation = Valve.VR.InteractionSystem.Player.instance.hmdTransform.localRotation.eulerAngles.y;
-            if(previousHeadLocalRotation.HasValue)
+            // The character follows the head only. The pelvis is deliberately not used here: it is a body
+            // IK target that carries terms which do not belong in the character facing, such as the
+            // hand-inferred adjustment applied when there is no waist tracker. Moving relative to the
+            // pelvis instead of the head is a locomotion option, applied where the joystick input is
+            // converted (see VHVRConfig.GetJoystickForwardDirection).
+            float currentLocalAngle = VRBackend.Active.Rig.Player.hmdTransform.localRotation.eulerAngles.y;
+            float? deltaRotation = null;
+            if (previousTrackedLocalAngle.HasValue)
             {
-                // Find the difference between the current rotation and previous rotation
-                float deltaRotation = currentHeadLocalRotation - previousHeadLocalRotation.Value;
-                
+                // Find the difference between the current rotation and previous rotation. Taken as an
+                // angle difference rather than a plain subtraction, which yields a full turn either way
+                // whenever the angle wraps around zero.
+                deltaRotation = Mathf.DeltaAngle(previousTrackedLocalAngle.Value, currentLocalAngle);
+            }
+            else if (VRPlayer.headPositionInitialized)
+            {
+                // Resuming after the head was not followed for a while, e. g. with a menu or a crafting
+                // station open: catch up on however far it turned away from the character in the meantime.
+                // Recentering leaves the rig's yaw cancelling out the head's (see
+                // VRPlayer.maybeInitHeadPosition()), and following the head keeps it that way, so the sum
+                // of the two is how far off the character is. With a recentering pending there is nothing
+                // to catch up on, since it is about to turn the view to the character instead.
+                deltaRotation =
+                    Mathf.DeltaAngle(0, VRPlayer.instance.transform.localRotation.eulerAngles.y + currentLocalAngle);
+            }
+
+            if (deltaRotation.HasValue)
+            {
                 // Rotate the look yaw by the amount the player rotated their head since last iteration
-                ___m_lookYaw *= Quaternion.AngleAxis(deltaRotation, Vector3.up);
-        
+                ___m_lookYaw *= Quaternion.AngleAxis(deltaRotation.Value, Vector3.up);
+
                 // Rotate the VRPlayer to match the current yaw
                 // to offset the rotation the VRPlayer will experience due to rotation of yaw.
-                VRPlayer.instance.transform.localRotation *= Quaternion.AngleAxis(-deltaRotation, Vector3.up);
+                VRPlayer.instance.transform.localRotation *= Quaternion.AngleAxis(-deltaRotation.Value, Vector3.up);
             }
-            
+
             // Save the current rotation for use in next iteration
-            previousHeadLocalRotation = currentHeadLocalRotation;
+            previousTrackedLocalAngle = currentLocalAngle;
         }
 
         public static void Postfix(Player __instance, ref Vector3 ___m_lookDir)
@@ -84,7 +156,9 @@ namespace ValheimVRMod.Patches
             {
                 return;
             }
-           ___m_lookDir = __instance.gameObject.transform.forward;
+            // The character moves relative to where it faces, or to what MouseAim makes of the forward direction
+            // setting without motion controls.
+            ___m_lookDir = MouseAim.IsActive ? MouseAim.GetMoveForward(__instance.gameObject.transform.forward) : __instance.gameObject.transform.forward;
         }
     }
 
@@ -113,12 +187,13 @@ namespace ValheimVRMod.Patches
             {
                 return;
             }
-            if (VRPlayer.attachedToPlayer)
+            if (VRPlayer.attachedToPlayer && !Player.m_localPlayer.InDodge())
             {
-                var hmdTransform = Valve.VR.InteractionSystem.Player.instance.hmdTransform;
+                var hmdTransform = VRBackend.Active.Rig.Player.hmdTransform;
                 // Set the eye rotation equal to HMD rotation
                 __instance.m_eye.rotation = hmdTransform.rotation;
-            } else if (!VRPlayer.attachedToPlayer)
+            }
+            else if (!VRPlayer.attachedToPlayer)
             {
                 // We still want to restrict camera movement via the mouse to the
                 // horizontal plane and allow any vertical movement to be from
@@ -131,17 +206,26 @@ namespace ValheimVRMod.Patches
     // Force the Player body rotatoin to always equal the yaw.
     class Player_Rotation_Patch
     {
+        public static Quaternion attachmentIndependentRoomRotation;
+
+        private static float lastPhysicsSyncAngle;
 
         [HarmonyPatch(typeof(Player), nameof(Player.Update))]
         class Player_Update_RotationPatch
         {
             public static void Postfix(Player __instance)
             {
-                if (VHVRConfig.NonVrPlayer() || __instance != Player.m_localPlayer)
+                if (ShouldFaceLookDirection(__instance))
                 {
-                    return;
+                    __instance.transform.rotation = __instance.m_lookYaw;
+
+                    if (Player_SetMouseLook_Patch.previousTrackedLocalAngle != null &&
+                        Mathf.Abs(Player_SetMouseLook_Patch.previousTrackedLocalAngle.Value - lastPhysicsSyncAngle) > 30)
+                    {
+                        Physics.SyncTransforms();
+                        lastPhysicsSyncAngle = Player_SetMouseLook_Patch.previousTrackedLocalAngle.Value;
+                    }
                 }
-                __instance.FaceLookDirection();
             }
         }
 
@@ -150,11 +234,10 @@ namespace ValheimVRMod.Patches
         {
             public static void Postfix(Player __instance)
             {
-                if (VHVRConfig.NonVrPlayer() || __instance != Player.m_localPlayer)
+                if (ShouldFaceLookDirection(__instance))
                 {
-                    return;
+                    __instance.transform.rotation = __instance.m_lookYaw;
                 }
-                __instance.FaceLookDirection();
             }
         }
 
@@ -163,22 +246,32 @@ namespace ValheimVRMod.Patches
         {
             public static void Postfix(Player __instance)
             {
-                if (VHVRConfig.NonVrPlayer() || __instance != Player.m_localPlayer)
+                if (ShouldFaceLookDirection(__instance))
                 {
-                    return;
+                    __instance.transform.rotation = __instance.m_lookYaw;
                 }
-                __instance.FaceLookDirection();
             }
         }
 
-        
+        public static bool ShouldFaceLookDirection(Player player)
+        {
+            // TODO: Consider disabling face-look-direction patch whenever VRPlayer.attachedToPlayer is false as opposed to just when PlayerCustomizaton.IsBarberGuiVisible().
+            return !VHVRConfig.NonVrPlayer() &&
+                player == Player.m_localPlayer &&
+                !PlayerCustomizaton.IsBarberGuiVisible() &&
+                !VRPlayer.inImmersiveDodge &&
+                !player.IsAttached() &&
+                !MouseAim.LeavesCharacterFacingToVanilla;
+        }
+
         /// <summary>
         /// When interacting with an attachment point orient player in the direction of the attachment point
         /// </summary>
         [HarmonyPatch(typeof(Player), nameof(Player.AttachStart))]
-        
+
         class Player_AttachStart_Patch
         {
+
             static void Postfix(Player __instance, Transform attachPoint)
             {
                 if (VHVRConfig.NonVrPlayer() ||
@@ -189,16 +282,128 @@ namespace ValheimVRMod.Patches
                     return;
                 }
 
-                if(attachPoint)
+                if (attachPoint)
                 {
                     // Rotate VRPlayer together with delta ship rotation
                     var attachmentHeading = attachPoint.transform.forward;
                     attachmentHeading.y = 0;
                     attachmentHeading.Normalize();
+                    var upTarget = __instance.transform.up;
+                    if (__instance.IsAttachedToShip() || __instance.IsRiding())
+                    {
+                        upTarget = Vector3.up;
+                    }
+                    __instance.m_lookYaw = Quaternion.LookRotation(attachmentHeading, upTarget);
+                    VRPlayer.RequestRecentering();
+                    VRPlayer.vrPlayerInstance?.ResetRoomscaleCamera();
+                    attachmentIndependentRoomRotation = Quaternion.Euler(0, VRPlayer.instance.transform.rotation.eulerAngles.y, 0);
+                }
+            }
+        }
 
-                    __instance.m_lookYaw = Quaternion.LookRotation(attachmentHeading, __instance.transform.up);
+        /// <summary>
+        /// With IsShipImmersiveCamera option, the camera will follow the rotation and tilt of the ship
+        /// </summary>
+        [HarmonyPatch(typeof(GameCamera), nameof(GameCamera.ApplyCameraTilt))]
+        class GameCamera_ApplyCameraTilt_Patch
+        {
+            static GameObject headLookRef;
+            static bool wasAttached;
+            static Quaternion lastAttachRot;
+            static Vector3 smoothCamUp;
+            static Vector3 smoothCamUpVel;
+            static void Postfix(Player player)
+            {
+                if (VHVRConfig.NonVrPlayer() ||
+                    player != Player.m_localPlayer ||
+                    !VRPlayer.attachedToPlayer ||
+                    !VRPlayer.inFirstPerson || !VHVRConfig.isShipImmersiveCameraStanding())
+                {
+                    return;
+                }
 
-                    Player_SetMouseLook_Patch.lastAttachmentHeading = null;
+                if (!headLookRef)
+                {
+                    headLookRef = new GameObject();
+                }
+                if (!player.IsAttached())
+                {
+                    var ship = player.GetStandingOnShip();
+                    var movableBase = player.transform.parent;
+                    if (ship || (movableBase && BuildingManager.IsModdedStructure(movableBase?.name)))
+                    {
+                        Transform referenceUp = null;
+                        if (ship)
+                        {
+                            referenceUp = ship.transform;
+                        }
+                        else if (movableBase && BuildingManager.IsModdedStructure(movableBase?.name))
+                        {
+                            referenceUp = movableBase.transform;
+                        }
+
+                        if (referenceUp == null)
+                        {
+                            return;
+                        }
+                        if (VHVRConfig.isShipImmersiveCameraStanding())
+                        {
+                            headLookRef.transform.SetParent(referenceUp);
+                            headLookRef.transform.position = player.m_head.transform.position;
+                            var targetUp = Vector3.up;
+                            var targetforward = player.m_body.transform.forward;
+
+                            if (!wasAttached)
+                            {
+                                player.m_lookYaw = Quaternion.LookRotation(targetforward, targetUp);
+                                headLookRef.transform.rotation = player.m_body.transform.rotation;
+                                lastAttachRot = headLookRef.transform.rotation;
+                                smoothCamUp = targetUp;
+                                wasAttached = true;
+                            }
+                            else
+                            {
+                                var newPlayerRot = headLookRef.transform.rotation;
+                                player.m_body.transform.rotation *= Quaternion.Inverse(lastAttachRot) * newPlayerRot;
+                                if (VHVRConfig.ShipImmersiveCameraType() == "ShipUp")
+                                {
+                                    targetUp = referenceUp.up;
+                                    targetforward = player.m_body.transform.forward;
+                                    targetforward = referenceUp.InverseTransformDirection(targetforward);
+                                    targetforward.y = 0;
+                                    targetforward = referenceUp.TransformDirection(targetforward);
+                                }
+                                else if (VHVRConfig.ShipImmersiveCameraType() == "WorldUp")
+                                {
+                                    targetforward = player.m_body.transform.forward;
+                                    targetforward.y = 0;
+                                }
+                                smoothCamUp = Vector3.SmoothDamp(smoothCamUp, targetUp, ref smoothCamUpVel, 0.2f, 1f, Time.deltaTime);
+                                player.m_lookYaw = Quaternion.LookRotation(targetforward, smoothCamUp);
+                                headLookRef.transform.rotation = player.m_body.transform.rotation;
+                                lastAttachRot = headLookRef.transform.rotation;
+                            }
+                        }
+                    }
+                    else if (wasAttached)
+                    {
+                        var targetforward = player.m_body.transform.forward;
+                        targetforward.y = 0;
+                        targetforward = targetforward.normalized;
+                        player.m_lookYaw = Quaternion.LookRotation(targetforward, Vector3.up);
+                        wasAttached = false;
+                    }
+                }
+                else
+                {
+                    if (wasAttached)
+                    {
+                        var targetforward = player.m_body.transform.forward;
+                        targetforward.y = 0;
+                        targetforward = targetforward.normalized;
+                        player.m_lookYaw = Quaternion.LookRotation(targetforward, Vector3.up);
+                        wasAttached = false;
+                    }
                 }
             }
         }
@@ -207,7 +412,7 @@ namespace ValheimVRMod.Patches
         /// Orient the player to the body direction when detaching from objects
         /// </summary>
         [HarmonyPatch(typeof(Player), nameof(Player.AttachStop))]
-        
+
         class Player_AttachStop_Patch
         {
             static void Prefix(Player __instance)
@@ -223,9 +428,13 @@ namespace ValheimVRMod.Patches
                 }
 
                 //Recenter player on body
-                float deltaRotation = __instance.transform.rotation.eulerAngles.y - Valve.VR.InteractionSystem.Player.instance.hmdTransform.rotation.eulerAngles.y;
-                VRPlayer.instance.transform.localRotation *= Quaternion.AngleAxis(deltaRotation, Vector3.up);
-                Player_SetMouseLook_Patch.previousHeadLocalRotation = null;
+                var attachmentHeading = __instance.transform.forward;
+                attachmentHeading.y = 0;
+                attachmentHeading.Normalize();
+                __instance.m_lookYaw = Quaternion.LookRotation(attachmentHeading, Vector3.up);
+                VRPlayer.RequestRecentering();
+                VRPlayer.vrPlayerInstance?.ResetRoomscaleCamera();
+                Player_SetMouseLook_Patch.previousTrackedLocalAngle = null;
             }
         }
 
@@ -256,25 +465,6 @@ namespace ValheimVRMod.Patches
                         patched.Add(instruction);
                 }
                 return patched;
-            }
-        }
-
-        /// <summary>
-        /// This makes the mounts try to follow the hmd eyedir
-        /// </summary>
-        [HarmonyPatch(typeof(Sadle), nameof(Sadle.ApplyControlls))]
-
-        class Sadle_ApplyControlls_Patch
-        {
-            static void Prefix(ref Vector3 lookDir)
-            {
-                if (VHVRConfig.NonVrPlayer())
-                {
-                    return;
-                }
-
-                //Recenter player on body
-                lookDir = Valve.VR.InteractionSystem.Player.instance.hmdTransform.forward;
             }
         }
     }

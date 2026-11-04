@@ -1,10 +1,7 @@
-using System.Reflection.Emit;
 using HarmonyLib;
 using UnityEngine;
 using ValheimVRMod.VRCore;
 using ValheimVRMod.Utilities;
-using System.Collections.Generic;
-using System;
 
 namespace ValheimVRMod.Patches
 {
@@ -23,8 +20,8 @@ namespace ValheimVRMod.Patches
                 return;
             }
 
-            __instance.m_zanim.SetFloat(Player.forward_speed, __instance.m_animator.GetFloat(Player.forward_speed) + VRPlayer.roomscaleAnimationForwardSpeed*VRPlayer.ROOMSCALE_ANIMATION_WEIGHT);
-            __instance.m_zanim.SetFloat(Player.sideway_speed, __instance.m_animator.GetFloat(Player.sideway_speed) + VRPlayer.roomscaleAnimationSideSpeed*VRPlayer.ROOMSCALE_ANIMATION_WEIGHT);
+            __instance.m_zanim.SetFloat(Player.s_forwardSpeed, __instance.m_animator.GetFloat(Player.s_forwardSpeed) + VRPlayer.roomscaleAnimationForwardSpeed * VRPlayer.ROOMSCALE_ANIMATION_WEIGHT);
+            __instance.m_zanim.SetFloat(Player.s_sidewaySpeed, __instance.m_animator.GetFloat(Player.s_sidewaySpeed) + VRPlayer.roomscaleAnimationSideSpeed * VRPlayer.ROOMSCALE_ANIMATION_WEIGHT);
         }
     }
 
@@ -57,8 +54,7 @@ namespace ValheimVRMod.Patches
     {
         private static void Prefix(Character __instance)
         {
-            
-            if(VHVRConfig.NonVrPlayer() ||
+            if (VHVRConfig.NonVrPlayer() ||
                 __instance != Player.m_localPlayer ||
                 !VRPlayer.inFirstPerson)
             {

@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using ValheimVRMod.Utilities;
 using ValheimVRMod.Patches;
 using UnityEngine.SceneManagement;
@@ -6,6 +6,7 @@ using UnityEngine.UI;
 using HarmonyLib;
 
 using static ValheimVRMod.Utilities.LogUtils;
+using TMPro;
 
 namespace ValheimVRMod.VRCore.UI
 {
@@ -13,6 +14,9 @@ namespace ValheimVRMod.VRCore.UI
     {
         private static readonly float CROSSHAIR_SCALAR = 0.1f;
         private static readonly float MIN_CROSSHAIR_DISTANCE = 0.5f;
+        // The mouse aim crosshair is not where one looks, so it has to be easier to find.
+        private static readonly float MOUSE_AIM_CROSSHAIR_SCALE = 1.5f;
+        public static readonly float WEAPON_CROSSHAIR_DISTANCE = 128f;
 
         public static int crosshairDepth = 1;
 
@@ -51,12 +55,38 @@ namespace ValheimVRMod.VRCore.UI
         private GameObject _pieceHealthBar;
 
         private GameObject _hoverNameCanvasParent;
-        private Canvas _hoverNameCanvas;
+        private RectTransform _hoverNameCanvasRect;
         // Left hand hovername objects
         public GameObject crosshairCloneLeftHand;
         public GameObject hoverNameCloneLeftHand;
         private GameObject _hoverNameCanvasParentLeft;
-        private Canvas _hoverNameCanvasLeft;
+        private RectTransform _hoverNameCanvasRectLeft;
+
+        // Weapon crosshair objects
+        private GameObject _crosshairCloneForWeapon;
+        private GameObject _weaponCrosshair;
+        public GameObject weaponCrosshair { get {
+                if (_weaponCrosshair == null)
+                {
+                    _weaponCrosshair = new GameObject("WeaponCrosshair");
+                    _weaponCrosshair.layer = LayerUtils.getWorldspaceUiLayer();
+                    Canvas canvas = _weaponCrosshair.AddComponent<Canvas>();
+                    canvas.renderMode = RenderMode.WorldSpace;
+                    float canvasWidth = canvas.GetComponent<RectTransform>().rect.width;
+                    float scaleFactor = CROSSHAIR_SCALAR * VHVRConfig.CrosshairScalar() / canvasWidth;
+                    _weaponCrosshair.transform.localScale = Vector3.one * scaleFactor * WEAPON_CROSSHAIR_DISTANCE;
+                }
+                if (_crosshairCloneForWeapon == null)
+                {
+                    _crosshairCloneForWeapon = GameObject.Instantiate(_crosshairClone);
+                }
+                if (_crosshairCloneForWeapon != null)
+                {
+                    _crosshairCloneForWeapon.transform.SetParent(_weaponCrosshair.GetComponent<Canvas>().GetComponent<RectTransform>(), false);
+                }
+                return _weaponCrosshair;
+            }
+        }
 
         public void maybeReparentCrosshair()
         {
@@ -76,6 +106,13 @@ namespace ValheimVRMod.VRCore.UI
                 }
                 return;
             }
+            if (Player.m_localPlayer && Player.m_localPlayer.IsAttachedToShip() && Player.m_localPlayer.GetControlledShip())
+            {
+                // TODO: check if these should simply be skipped when motion control is disabled.
+                _hoverNameCanvasParentLeft?.SetActive(false);
+                _hoverNameCanvasParent?.SetActive(false);
+                return;
+            }
             if ((_canvasCrosshairRoot == null || _canvasCrosshairRootClone == null)
                 && !findVanillaCrosshairs(guiCanvas.transform))
             {
@@ -89,7 +126,8 @@ namespace ValheimVRMod.VRCore.UI
             _canvasCrosshairRoot.SetActive(false); // Disable the original crosshairs
             _canvasCrosshairRootClone.SetActive(VRPlayer.attachedToPlayer);
             _canvasCrosshairRootClone.transform.SetParent(_crosshairCanvas.transform, false);
-            _crosshairClone.SetActive(VHVRConfig.ShowStaticCrosshair());
+            // Vanilla game has control of isActive state of _crosshairClone, so only disabling its Image component can hide it.
+            _crosshairClone.GetComponent<Image>().enabled = VHVRConfig.ShowStaticCrosshair();
             if (crosshairCloneLeftHand)
             {
                 crosshairCloneLeftHand.SetActive(VHVRConfig.ShowStaticCrosshair());
@@ -144,24 +182,26 @@ namespace ValheimVRMod.VRCore.UI
 
         private void maybeCreateHoverNameObjects()
         {
-            if ((_hoverNameCanvasParent != null && _hoverNameCanvas != null && _hoverNameCanvasParentLeft != null && _hoverNameCanvasLeft != null) || !ensureCrosshairCamera())
+            if ((_hoverNameCanvasParent != null && _hoverNameCanvasRect != null && _hoverNameCanvasParentLeft != null && _hoverNameCanvasRectLeft != null) || !ensureCrosshairCamera())
             {
                 return;
             }
             _hoverNameCanvasParent = new GameObject("HoverNameCanvasParent");
             GameObject.DontDestroyOnLoad(_hoverNameCanvasParent);
             _hoverNameCanvasParent.layer = LayerUtils.getWorldspaceUiLayer();
-            _hoverNameCanvas = _hoverNameCanvasParent.AddComponent<Canvas>();
-            _hoverNameCanvas.renderMode = RenderMode.WorldSpace;
-            _hoverNameCanvas.worldCamera = _crosshairCamera;
+            Canvas hoverNameCanvas = _hoverNameCanvasParent.AddComponent<Canvas>();
+            _hoverNameCanvasRect = hoverNameCanvas.GetComponent<RectTransform>();
+            hoverNameCanvas.renderMode = RenderMode.WorldSpace;
+            hoverNameCanvas.worldCamera = _crosshairCamera;
 
             // Left hand
             _hoverNameCanvasParentLeft = new GameObject("HoverNameCanvasParentLeft");
             GameObject.DontDestroyOnLoad(_hoverNameCanvasParentLeft);
             _hoverNameCanvasParentLeft.layer = LayerUtils.getWorldspaceUiLayer();
-            _hoverNameCanvasLeft = _hoverNameCanvasParentLeft.AddComponent<Canvas>();
-            _hoverNameCanvasLeft.renderMode = RenderMode.WorldSpace;
-            _hoverNameCanvasLeft.worldCamera = _crosshairCamera;
+            Canvas hoverNameCanvasLeft = _hoverNameCanvasParentLeft.AddComponent<Canvas>();
+            _hoverNameCanvasRectLeft = hoverNameCanvasLeft.GetComponent<RectTransform>();
+            hoverNameCanvasLeft.renderMode = RenderMode.WorldSpace;
+            hoverNameCanvasLeft.worldCamera = _crosshairCamera;
             hoverNameCloneLeftHand = GameObject.Instantiate(_hoverNameClone);
             crosshairCloneLeftHand = GameObject.Instantiate(_crosshairClone);
         }
@@ -173,12 +213,12 @@ namespace ValheimVRMod.VRCore.UI
                 return;
             }
             maybeCreateHoverNameObjects();
-            if (_hoverNameCanvas != null && _hoverNameCanvasLeft != null)
+            if (_hoverNameCanvasRect != null && _hoverNameCanvasRectLeft != null)
             {
-                _hoverNameClone.transform.SetParent(_hoverNameCanvas.GetComponent<RectTransform>(), false);
-                _crosshairClone.transform.SetParent(_hoverNameCanvas.GetComponent<RectTransform>(), false);
-                hoverNameCloneLeftHand.transform.SetParent(_hoverNameCanvasLeft.GetComponent<RectTransform>(), false);
-                crosshairCloneLeftHand.transform.SetParent(_hoverNameCanvasLeft.GetComponent<RectTransform>(), false);
+                _hoverNameClone.transform.SetParent(_hoverNameCanvasRect, false);
+                _crosshairClone.transform.SetParent(_hoverNameCanvasRect, false);
+                hoverNameCloneLeftHand.transform.SetParent(_hoverNameCanvasRectLeft, false);
+                crosshairCloneLeftHand.transform.SetParent(_hoverNameCanvasRectLeft, false);
             }
         }
 
@@ -188,7 +228,10 @@ namespace ValheimVRMod.VRCore.UI
             {
                 return true;
             }
-            ensureCrosshairCamera();
+            if (!ensureCrosshairCamera())
+            {
+                return false;
+            }
             _crosshairCanvasParent = new GameObject("CrosshairCanvasGameObject");
             _crosshairCanvasParent.layer = LayerUtils.getWorldspaceUiLayer();
             GameObject.DontDestroyOnLoad(_crosshairCanvasParent);
@@ -209,14 +252,42 @@ namespace ValheimVRMod.VRCore.UI
             }
             float canvasWidth = _crosshairCanvas.GetComponent<RectTransform>().rect.width;
             float scaleFactor = CROSSHAIR_SCALAR * VHVRConfig.CrosshairScalar() / canvasWidth;
-            _crosshairCamera.transform.rotation = CameraUtils.getCamera(CameraUtils.VR_CAMERA).transform.rotation;
-            _crosshairCamera.transform.position = CameraUtils.getCamera(CameraUtils.VR_CAMERA).transform.position;
+            _crosshairCamera.transform.SetPositionAndRotation(VRPlayer.vrCam.transform.position, VRPlayer.vrCam.transform.rotation);
+            if (MouseAim.IsActive)
+            {
+                // The aim is not the head's, so the crosshair must not be carried along by the camera: placed in
+                // the world instead, which UpdateMouseAimCrosshair() keeps up every frame.
+                _crosshairCanvasParent.transform.SetParent(null, false);
+                Vector3 aimDirection = MouseAim.Forward;
+                // Use far HUD when aiming a weapon
+                float aimDistance =
+                    Player.m_localPlayer.IsDrawingBow() || MouseAim.IsAimingAttack ?
+                    WEAPON_CROSSHAIR_DISTANCE :
+                    calculateCrosshairDistance(aimDirection);
+                _crosshairCanvasParent.transform.SetPositionAndRotation(
+                    _crosshairCamera.transform.position + aimDirection * aimDistance,
+                    Quaternion.LookRotation(aimDirection, VRPlayer.instance.transform.up));
+                _crosshairCanvasParent.transform.localScale = Vector3.one;
+                _crosshairCanvas.GetComponent<RectTransform>().localScale =
+                    Vector3.one * scaleFactor * MOUSE_AIM_CROSSHAIR_SCALE * aimDistance;
+                return;
+            }
             _crosshairCanvasParent.transform.SetParent(_crosshairCamera.gameObject.transform, false);
             _crosshairCanvasParent.transform.position = VRPlayer.instance.transform.position;
-            float crosshairDistance = calculateCrosshairDistance();
+            float crosshairDistance = calculateCrosshairDistance(_crosshairCamera.transform.forward);
             _crosshairCanvasParent.transform.localPosition = new Vector3(0f, 0f, crosshairDistance);
             _crosshairCanvas.GetComponent<RectTransform>().localScale = Vector3.one * scaleFactor * crosshairDistance;
-            _crosshairCanvasParent.transform.localRotation = Quaternion.Euler(0f, 0f, 0f);
+            _crosshairCanvasParent.transform.localRotation = Quaternion.identity;
+        }
+
+        // maybeReparentCrosshair() only runs at the physics rate, which is enough for a crosshair fixed to the
+        // camera but leaves one that follows MouseAim visibly lagging behind the turning view in between.
+        public void UpdateMouseAimCrosshair()
+        {
+            if (MouseAim.IsActive && _crosshairCanvas != null && _crosshairCanvasParent.activeInHierarchy && VRPlayer.vrCam != null)
+            {
+                setCrosshairCanvasPositionAndScale();
+            }
         }
 
         private void setPieceHealthCanvasPositionAndScale()
@@ -242,7 +313,7 @@ namespace ValheimVRMod.VRCore.UI
             {
                 return;
             }
-            float canvasWidth = _hoverNameCanvas.GetComponent<RectTransform>().rect.width;
+            float canvasWidth = _hoverNameCanvasRect.rect.width;
             float scaleFactor = CROSSHAIR_SCALAR * VHVRConfig.CrosshairScalar() / canvasWidth;
             var positionRight = HandBasedInteractionPatches.currentHitPositionRight;
             var positionLeft = HandBasedInteractionPatches.currentHitPositionLeft;
@@ -267,10 +338,10 @@ namespace ValheimVRMod.VRCore.UI
             return Player.m_localPlayer.m_hoveringPiece;
         }
 
-        private float calculateCrosshairDistance()
+        private float calculateCrosshairDistance(Vector3 direction)
         {
             RaycastHit hit;
-            if (Physics.Raycast(new Ray(_crosshairCamera.transform.position, _crosshairCamera.transform.forward), out hit,
+            if (Physics.Raycast(new Ray(_crosshairCamera.transform.position, direction), out hit,
                 _crosshairCamera.farClipPlane * 0.95f, CROSSHAIR_RAYCAST_LAYERMASK))
             {
                 return Mathf.Max(MIN_CROSSHAIR_DISTANCE, hit.distance);
@@ -356,47 +427,58 @@ namespace ValheimVRMod.VRCore.UI
             }
             foreach (Transform child in _canvasCrosshairRootClone.transform)
             {
-                if (child.gameObject.name == "crosshair")
+                switch (child.gameObject.name)
                 {
-                    _crosshairClone = child.gameObject;
-                }
-                else if (child.gameObject.name == "crosshair_bow")
-                {
-                    _crosshairBowClone = child.gameObject;
-                }
-                else if (child.gameObject.name == "HoverName")
-                {
-                    _hoverNameClone = child.gameObject;
-                }
-                else if (child.gameObject.name == "Sneak_hidden")
-                {
-                    _sneakHiddenClone = child.gameObject;
-                }
-                else if (child.gameObject.name == "Sneak_detected")
-                {
-                    _sneakDetectedClone = child.gameObject;
-                }
-                else if (child.gameObject.name == "Sneak_alert")
-                {
-                    _sneakAlertClone = child.gameObject;
-                }
-                else if (child.gameObject.name == "StealthBar")
-                {
-                    _stealthBarClone = child.gameObject;
-                }
-                else if (child.gameObject.name == "PieceHealthRoot")
-                {
-                    _pieceHealthRoot = child.gameObject;
-                    foreach (Transform healthRootChild in child)
-                    {
-                        if (healthRootChild.gameObject.name == "PieceHealthBar")
+                    case "crosshair":
+                        refreshCache(ref _crosshairClone, child.gameObject);
+                        break;
+                    case "crosshair_bow":
+                        refreshCache(ref _crosshairBowClone, child.gameObject);
+                        break;
+                    case "HoverName":
+                        refreshCache(ref _hoverNameClone, child.gameObject);
+                        break;
+                    case "Sneak_hidden":
+                        refreshCache(ref _sneakHiddenClone, child.gameObject);
+                        break;
+                    case "Sneak_detected":
+                        refreshCache(ref _sneakDetectedClone, child.gameObject);
+                        break;
+                    case "Sneak_alert":
+                        refreshCache(ref _sneakAlertClone, child.gameObject);
+                        break;
+                    case "StealthBar":
+                        refreshCache(ref _stealthBarClone, child.gameObject);
+                        break;
+                    case "PieceHealthRoot":
+                        refreshCache(ref _pieceHealthRoot, child.gameObject);
+                        foreach (Transform healthRootChild in child)
                         {
-                            _pieceHealthBar = healthRootChild.gameObject;
-                            break;
+                            if (healthRootChild.gameObject.name == "PieceHealthBar")
+                            {
+                                refreshCache(ref _pieceHealthBar, healthRootChild.gameObject);
+                                break;
+                            }
                         }
-                    }
+                        break;
                 }
             }
+        }
+
+        private void refreshCache(ref GameObject cache, GameObject value)
+        {
+            if (cache == value)
+            {
+                return;
+            }
+
+            if (cache != null)
+            {
+                LogWarning("Destroying stale GameObject in cache: " + cache.name);
+                Object.Destroy(cache);
+            }
+
+            cache = value;
         }
 
         // Make sure the HUD is always pointing to our copies of the
@@ -442,7 +524,7 @@ namespace ValheimVRMod.VRCore.UI
             }
             if (_hoverNameClone != null)
             {
-                Text hoverText = _hoverNameClone.GetComponent<Text>();
+                TextMeshProUGUI hoverText = _hoverNameClone.GetComponent<TextMeshProUGUI>();
                 if (hoverText != null)
                 {
                     hud.m_hoverName = hoverText;

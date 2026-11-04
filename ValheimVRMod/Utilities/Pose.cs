@@ -1,92 +1,988 @@
+using ValheimVRMod.VRCore.Backends;
 using UnityEngine;
+using ValheimVRMod.Patches;
 using ValheimVRMod.Scripts;
 using ValheimVRMod.VRCore;
 using ValheimVRMod.VRCore.UI;
-using Valve.VR;
-using Valve.VR.InteractionSystem;
 
 namespace ValheimVRMod.Utilities {
-    public static class Pose {
-        
-        public static bool toggleShowLeftHand = true;
-        public static bool toggleShowRightHand = true;
-        public static bool justUnsheathed;
+    public class Pose : MonoBehaviour
+    {
+        private static bool isLeftHandDrawingWeapon = false;
+        private static bool isRightHandDrawingWeapon = false;
+        private static BackReachLocation rightHandGrabbedBackLocation = BackReachLocation.None;
+        private static BackReachLocation leftHandGrabbedBackLocation = BackReachLocation.None;
+        private static bool isLeftHandStickyHolsterArmed = false;
+        private static bool isRightHandStickyHolsterArmed = false;
 
-        public static void checkInteractions()
+        private static VRBooleanAction grabAction { get { return VRInputActions.valheim_Grab; } }
+
+        private enum BackReachLocation
         {
-            
-            if (Player.m_localPlayer == null || !VRControls.mainControlsActive)
+            None,
+            // Each location is named after the shoulder or waist being reached, not the hand reaching it.
+            LeftShoulderRadialUp,        // right (opposite) hand, left shoulder
+            LeftShoulderRadialDown,      // right (opposite) hand, left shoulder
+            LeftShoulderRadialMedial,    // left hand, left (same) shoulder
+            LeftShoulderRadialLateral,   // left hand, left (same) shoulder
+            RightShoulderRadialUp,       // left (opposite) hand, right shoulder
+            RightShoulderRadialDown,     // left (opposite) hand, right shoulder
+            RightShoulderRadialMedial,   // right hand, right (same) shoulder
+            RightShoulderRadialLateral,  // right hand, right (same) shoulder
+            LeftWaistRadialForward,      // right (opposite) hand, left waist
+            LeftWaistRadialBackward,     // right (opposite) hand, left waist
+            LeftWaistRadialMedial,       // left hand, left (same) waist
+            LeftWaistRadialLateral,      // left hand, left (same) waist
+            RightWaistRadialForward,     // left (opposite) hand, right waist
+            RightWaistRadialBackward,    // left (opposite) hand, right waist
+            RightWaistRadialMedial,      // right hand, right (same) waist
+            RightWaistRadialLateral,     // right hand, right (same) waist
+        }
+
+        public void Update()
+        {
+            // TODO: consider making this class extends Monobehaviour instead of having VRPlayer call this method every frame
+
+            if (Player.m_localPlayer == null || !VRControls.mainControlsActive || Player.m_localPlayer.IsSwimming())
             {
                 return;
             }
 
-            checkHandOverShoulder(true, ref toggleShowLeftHand);
-            checkHandOverShoulder(false, ref toggleShowRightHand);
+            checkHolsterActions(
+                isRightHand: false, VRInputActions.valheim_HolsterLeftHandItem, VRInputActions.valheim_UnholsterLeftHandItem);
+            checkHolsterActions(
+                isRightHand: true, VRInputActions.valheim_HolsterRightHandItem, VRInputActions.valheim_UnholsterRightHandItem);
 
-        }
-        
-        private static void checkHandOverShoulder(bool isRightHand, ref bool toggleShowHand)
-        {
-            var isMainHand = isRightHand ^ VHVRConfig.LeftHanded();
-            var inputSource = isMainHand ? SteamVR_Input_Sources.RightHand : SteamVR_Input_Sources.LeftHand;
-            var hand = isMainHand ? VRPlayer.rightHand : VRPlayer.leftHand;
-            
-            var camera = CameraUtils.getCamera(CameraUtils.VR_CAMERA).transform;
-            var action = SteamVR_Actions.valheim_Grab;
-            if (camera.InverseTransformPoint(hand.transform.position).y > -0.4f &&
-                camera.InverseTransformPoint(hand.transform.position).z < 0)
+            var leftHandStartsGripping = grabAction.GetStateDown(VRInputSource.LeftHand);
+            var rightHandStartsGripping = grabAction.GetStateDown(VRInputSource.RightHand);
+            var leftHandGripping = grabAction.GetState(VRInputSource.LeftHand);
+            var rightHandGripping = grabAction.GetState(VRInputSource.RightHand);
+            var isDoubleGripping =
+                (leftHandStartsGripping && rightHandGripping) ||
+                (leftHandGripping && rightHandStartsGripping);
+
+            var leftHandBackReach = getBackReachLocation(VRPlayer.leftHand.transform, isRightHand: false);
+            var rightHandBackReach = getBackReachLocation(VRPlayer.rightHand.transform, isRightHand: true);
+            // A grip pressed or released only starts or ends a gesture where the hand is steady. Drawing what has been
+            // gripped is told by the hand leaving or moving fast, so that goes by where the hand is regardless.
+            var leftHandSteadyBackReach =
+                getSteadyReach(isRightHand: false, leftHandBackReach);
+            var rightHandSteadyBackReach =
+                getSteadyReach(isRightHand: true, rightHandBackReach);
+
+            checkHolster(leftHandSteadyBackReach, rightHandSteadyBackReach);
+
+            updateGrabbedBackReachLocation(leftHandSteadyBackReach, false);
+            updateGrabbedBackReachLocation(rightHandSteadyBackReach, true);
+
+            if (checkGripDraw(leftHandBackReach, rightHandBackReach)) {
+                isLeftHandDrawingWeapon = isRightHandDrawingWeapon = true;
+            }
+            else if (isDoubleGripping && checkUnsheathingHolsteredDualWieldWeapon(leftHandSteadyBackReach, rightHandSteadyBackReach))
             {
-
-                if (action.GetStateDown(inputSource))
+                isLeftHandDrawingWeapon = isRightHandDrawingWeapon = true;
+            }
+            else {
+                if (rightHandStartsGripping)
                 {
+                    if (VRPlayer.isRightHandMainWeaponHand)
+                    {
+                        // Do not require steadiness for arrow or bolt toggle
+                        checkArrowToggle(rightHandBackReach);
+                    }
+                    if (checkUnsheathingHolsteredNonDualWieldItem(isRightHand: true, rightHandSteadyBackReach))
+                    {
+                        isRightHandDrawingWeapon = true;
+                    }
+                }
+                if (leftHandStartsGripping)
+                {
+                    if (VRPlayer.isLeftHandMainWeaponHand)
+                    {
+                        // Do not require steadiness for arrow or bolt toggle
+                        checkArrowToggle(leftHandBackReach);
+                    }
+                    if (checkUnsheathingHolsteredNonDualWieldItem(isRightHand: false, leftHandSteadyBackReach))
+                    {
+                        isLeftHandDrawingWeapon = true;
+                    }
+                }
+            }
 
-                    if(isRightHand && isHoldingItem(isRightHand) && isUnpressSheath()) {
-                        return;
-                    } 
-                 
-                    toggleShowHand = false;
-                    hand.hapticAction.Execute(0, 0.2f, 100, 0.3f, inputSource);
-                    
-                    if (isRightHand && EquipScript.getLeft() == EquipType.Bow) {
-                        BowLocalManager.instance.toggleArrow();
-                    } else if (isHoldingItem(isRightHand)) {
-                        Player.m_localPlayer.HideHandItems();
-                    } else {
-                        Player.m_localPlayer.ShowHandItems();
-                        justUnsheathed = true;
-                    }
-                }
-                else if (!justUnsheathed && isRightHand && action.GetStateUp(inputSource)) {
-                    if (isHoldingItem(isRightHand) && isUnpressSheath()) {
-                        Player.m_localPlayer.HideHandItems();
-                    }
+            if (FistCollision.hasDualWieldingWeaponEquipped())
+            {
+                if (!(leftHandGripping || rightHandGripping))
+                {
+                    isLeftHandDrawingWeapon = isRightHandDrawingWeapon = false;
                 }
             }
-            if (justUnsheathed && isRightHand && action.GetStateUp(inputSource)&& isUnpressSheath()) {
-                justUnsheathed = false;
+            else {
+                if (!leftHandGripping)
+                {
+                    isLeftHandDrawingWeapon = false;
+                }
+                if (!rightHandGripping)
+                {
+                    isRightHandDrawingWeapon = false;
+                }
             }
         }
-        
-        private static bool isHoldingItem(bool isRightHand) {
-            return isRightHand && Player.m_localPlayer.GetRightItem() != null
-                   || !isRightHand && Player.m_localPlayer.GetLeftItem() != null;
+
+        // The bindable holster and unholster actions of a hand, the button counterpart of the back reach gestures.
+        // Both can be bound to the same button, which then toggles: the hand holsters what it holds, or else
+        // unholsters.
+        private static void checkHolsterActions(bool isRightHand, VRBooleanAction holsterAction, VRBooleanAction unholsterAction)
+        {
+            bool isHolstering = holsterAction.GetStateDown(VRInputSource.Any);
+            bool isUnholstering = unholsterAction.GetStateDown(VRInputSource.Any);
+            if (isHolstering && isUnholstering)
+            {
+                isHolstering = isHoldingItem(isRightHand);
+                isUnholstering = !isHolstering;
+            }
+            if (isHolstering)
+            {
+                holsterHandItem(isRightHand);
+            }
+            else if (isUnholstering)
+            {
+                unholsterHandItem(isRightHand);
+            }
         }
-        
-        private static bool isUnpressSheath() {
-            return isBuildingTool() 
-                   || isHoldingThrowable();
+
+        // Including a weapon wielded with both hands, which either hand can holster.
+        private static bool isHoldingItem(bool isRightHand)
+        {
+            return (isRightHand ? VRPlayer.rightHandItem : VRPlayer.leftHandItem) != null ||
+                (HeldConsumable.isHolding && HeldConsumable.isInRightHand == isRightHand) ||
+                LocalWeaponWield.isCurrentlyTwoHanded() ||
+                FistCollision.hasDualWieldingWeaponEquipped();
         }
-        private static bool isHoldingThrowable() {
-            return EquipScript.getRight() == EquipType.Spear 
-                   || EquipScript.getRight() == EquipType.SpearChitin
-                   || EquipScript.getRight() == EquipType.ThrowObject
-                   || EquipScript.getRight() == EquipType.Fishing
-                   || EquipScript.getRight() == EquipType.Tankard;
+
+        // Puts away what the hand holds the way the holster gesture does, except that held food does not bring back
+        // the item it took the place of: that stays holstered for the unholster action.
+        private static void holsterHandItem(bool isRightHand)
+        {
+            if (HeldConsumable.isHolding && HeldConsumable.isInRightHand == isRightHand)
+            {
+                HeldConsumable.PutAway(restoreWeapon: false);
+                return;
+            }
+
+            if (FistCollision.hasDualWieldingWeaponEquipped())
+            {
+                PatchHideHandItems.HideLocalPlayerHandItem(isMainHandItem: true);
+                return;
+            }
+
+            if (LocalWeaponWield.isCurrentlyTwoHanded())
+            {
+                if (VRPlayer.leftHandItem != null)
+                {
+                    PatchHideHandItems.HideLocalPlayerHandItem(isMainHandItem: VRPlayer.isLeftHandMainWeaponHand);
+                }
+                if (VRPlayer.rightHandItem != null)
+                {
+                    PatchHideHandItems.HideLocalPlayerHandItem(isMainHandItem: VRPlayer.isRightHandMainWeaponHand);
+                }
+                return;
+            }
+
+            if ((isRightHand ? VRPlayer.rightHandItem : VRPlayer.leftHandItem) != null)
+            {
+                PatchHideHandItems.HideLocalPlayerHandItem(
+                    isMainHandItem: isRightHand ? VRPlayer.isRightHandMainWeaponHand : VRPlayer.isLeftHandMainWeaponHand);
+            }
         }
-        private static bool isBuildingTool() {
-            return EquipScript.getRight() == EquipType.Hammer 
-                   || EquipScript.getRight() == EquipType.Hoe 
-                   || EquipScript.getRight() == EquipType.Cultivator;
+
+        // Takes into the hand the holstered item that the shoulder gesture of that hand would, or else the other
+        // holstered item. A holstered dual wield weapon needs both hands free.
+        private static void unholsterHandItem(bool isRightHand)
+        {
+            var player = Player.m_localPlayer;
+            if (isHoldingItem(isRightHand) || !canGrabNewWeapon(isRightHand))
+            {
+                return;
+            }
+
+            if (EquipScript.LocalPlayerHasDualWieldingWeaponHolstered())
+            {
+                if (canGrabNewWeapon(!isRightHand) && PatchShowHandItems.ShowLocalPlayerHandItem(isMainHandItem: true))
+                {
+                    VRPlayer.offHandWield = false;
+                    playEquippingHaptic(true, true);
+                }
+                return;
+            }
+
+            bool isOwnMainHandItem = isRightHand ^ VHVRConfig.LeftHanded();
+            if (PatchShowHandItems.ShowLocalPlayerHandItem(isOwnMainHandItem))
+            {
+                VRPlayer.offHandWield = false;
+                playEquippingHaptic(!isRightHand, isRightHand);
+                return;
+            }
+
+            var otherItem = isOwnMainHandItem ? player.m_hiddenLeftItem : player.m_hiddenRightItem;
+            if (TryEquipToHand(otherItem, isRightHand))
+            {
+                playEquippingHaptic(!isRightHand, isRightHand);
+            }
+        }
+
+        private static BackReachLocation getSteadyReach(bool isRightHand, BackReachLocation backReach)
+        {
+            switch (backReach)
+            {
+                case BackReachLocation.LeftWaistRadialMedial:
+                case BackReachLocation.LeftWaistRadialLateral:
+                case BackReachLocation.RightWaistRadialMedial:
+                case BackReachLocation.RightWaistRadialLateral:
+                    return isSteady(isRightHand, maxHeadSpeed: 4f, maxHandSpeed: 6f) ? backReach : BackReachLocation.None;
+                default:
+                    return isSteady(isRightHand, maxHeadSpeed: 1.5f, maxHandSpeed: 1.5f) ? backReach : BackReachLocation.None;
+            }
+        }
+
+        // Speeds are relative to the VR rig, so walking or running does not count against steadiness.
+        private static bool isSteady(bool isRightHand, float maxHeadSpeed, float maxHandSpeed)
+        {
+            var headPhysicsEstimator = VRPlayer.headPhysicsEstimator;
+            var handPhysicsEstimator = isRightHand ? VRPlayer.rightHandPhysicsEstimator : VRPlayer.leftHandPhysicsEstimator;
+            if (headPhysicsEstimator == null || handPhysicsEstimator == null)
+            {
+                return true;
+            }
+            return headPhysicsEstimator.GetVelocity().magnitude < maxHeadSpeed &&
+                handPhysicsEstimator.GetVelocity().magnitude < maxHandSpeed;
+        }
+
+        public static bool isBehindBack(Transform handTransform)
+        {
+            Camera vrCam = VRPlayer.vrCam;
+            if (vrCam == null)
+            {
+                return false;
+            }
+
+            Vector3 roomUp = vrCam.transform.parent.up;
+            Vector3 offset = handTransform.position - vrCam.transform.position;
+            float verticalOffset = Vector3.Dot(roomUp, offset);
+            if (verticalOffset < -0.75f || verticalOffset > 0.25f)
+            {
+                return false;
+            }
+
+            Vector3 facing = Vector3.ProjectOnPlane(vrCam.transform.forward, roomUp).normalized;
+
+            return Vector3.Dot(facing, offset) < -0.05f;
+        }
+
+        private static void checkHolster(BackReachLocation leftHandBackReach, BackReachLocation rightHandBackReach)
+        {
+            if (FistCollision.hasDualWieldingWeaponEquipped())
+            {
+                if (isLeftHandDrawingWeapon || isRightHandDrawingWeapon)
+                {
+                    return;
+                }
+                if (leftHandBackReach == BackReachLocation.None || rightHandBackReach == BackReachLocation.None)
+                {
+                    return;
+                }
+                if ((grabAction.GetStateUp(VRInputSource.LeftHand) && grabAction.GetStateUp(VRInputSource.RightHand)) ||
+                    (grabAction.GetStateUp(VRInputSource.LeftHand) && grabAction.GetState(VRInputSource.RightHand)) ||
+                    (grabAction.GetState(VRInputSource.LeftHand) && grabAction.GetStateUp(VRInputSource.RightHand)))
+                {
+                    PatchHideHandItems.HideLocalPlayerHandItem(true);
+                }
+                return;
+            }
+
+            if (LocalWeaponWield.isCurrentlyTwoHanded() &&
+                LocalWeaponWield.IsTwoHandedWieldSticky() &&
+                EquipScript.CurrentOffHandEquipType() == EquipType.None)
+            {
+                checkStickyTwoHandedHolster(leftHandBackReach, rightHandBackReach);
+                return;
+            }
+            isLeftHandStickyHolsterArmed = isRightHandStickyHolsterArmed = false;
+
+            if (LocalWeaponWield.isCurrentlyTwoHanded())
+            {
+                if (isLeftHandDrawingWeapon || isRightHandDrawingWeapon)
+                {
+                    return;
+                }
+                bool isLeftHandHolstering =
+                    leftHandBackReach != BackReachLocation.None &&
+                    grabAction.GetStateUp(VRInputSource.LeftHand) &&
+                    !grabAction.GetState(VRInputSource.RightHand);
+                bool isRightHandHolstering =
+                    rightHandBackReach != BackReachLocation.None &&
+                    grabAction.GetStateUp(VRInputSource.RightHand) &&
+                    !grabAction.GetState(VRInputSource.LeftHand);
+                if (isLeftHandHolstering || isRightHandHolstering) {
+                    if (VRPlayer.leftHandItem != null)
+                    {
+                        PatchHideHandItems.HideLocalPlayerHandItem(isMainHandItem: VRPlayer.isLeftHandMainWeaponHand);
+                    }
+                    if (VRPlayer.rightHandItem != null)
+                    {
+                        PatchHideHandItems.HideLocalPlayerHandItem(isMainHandItem: VRPlayer.isRightHandMainWeaponHand);
+                    }
+                }
+                return;
+            }
+
+            if (HeldConsumable.isHolding)
+            {
+                bool isFoodInRightHand = HeldConsumable.isInRightHand;
+                if (!(isFoodInRightHand ? isRightHandDrawingWeapon : isLeftHandDrawingWeapon) &&
+                    (isFoodInRightHand ? rightHandBackReach : leftHandBackReach) != BackReachLocation.None &&
+                    grabAction.GetStateUp(isFoodInRightHand ? VRInputSource.RightHand : VRInputSource.LeftHand))
+                {
+                    HeldConsumable.PutAway(restoreWeapon: true);
+                    return;
+                }
+            }
+
+            if (!isLeftHandDrawingWeapon &&
+                VRPlayer.leftHandItem != null &&
+                leftHandBackReach != BackReachLocation.None &&
+                grabAction.GetStateUp(VRInputSource.LeftHand))
+            {
+                PatchHideHandItems.HideLocalPlayerHandItem(isMainHandItem: VRPlayer.isLeftHandMainWeaponHand);
+            }
+
+            if (!isRightHandDrawingWeapon &&
+                VRPlayer.rightHandItem != null &&
+                rightHandBackReach != BackReachLocation.None &&
+                grabAction.GetStateUp(VRInputSource.RightHand))
+            {
+                PatchHideHandItems.HideLocalPlayerHandItem(isMainHandItem: VRPlayer.isRightHandMainWeaponHand);
+            }
+        }
+
+        // While a weapon is held with sticky two-handed wield and neither hand is gripping, either hand can holster it
+        // by pressing and releasing grip behind the back, as long as the other hand does not grip in the meantime.
+        private static void checkStickyTwoHandedHolster(BackReachLocation leftHandBackReach, BackReachLocation rightHandBackReach)
+        {
+            bool leftHandGripping = grabAction.GetState(VRInputSource.LeftHand);
+            bool rightHandGripping = grabAction.GetState(VRInputSource.RightHand);
+
+            // A press only starts the gesture if the other hand is not gripping, i. e. neither hand was gripping before it.
+            if (grabAction.GetStateDown(VRInputSource.LeftHand))
+            {
+                isLeftHandStickyHolsterArmed = !rightHandGripping;
+            }
+            if (grabAction.GetStateDown(VRInputSource.RightHand))
+            {
+                isRightHandStickyHolsterArmed = !leftHandGripping;
+            }
+            // The other hand gripping at any point during the gesture cancels it.
+            if (rightHandGripping)
+            {
+                isLeftHandStickyHolsterArmed = false;
+            }
+            if (leftHandGripping)
+            {
+                isRightHandStickyHolsterArmed = false;
+            }
+
+            bool isLeftHandHolstering =
+                isLeftHandStickyHolsterArmed &&
+                !isLeftHandDrawingWeapon &&
+                leftHandBackReach != BackReachLocation.None &&
+                grabAction.GetStateUp(VRInputSource.LeftHand);
+            bool isRightHandHolstering =
+                isRightHandStickyHolsterArmed &&
+                !isRightHandDrawingWeapon &&
+                rightHandBackReach != BackReachLocation.None &&
+                grabAction.GetStateUp(VRInputSource.RightHand);
+
+            if (!leftHandGripping)
+            {
+                isLeftHandStickyHolsterArmed = false;
+            }
+            if (!rightHandGripping)
+            {
+                isRightHandStickyHolsterArmed = false;
+            }
+
+            if (isLeftHandHolstering || isRightHandHolstering)
+            {
+                isLeftHandStickyHolsterArmed = isRightHandStickyHolsterArmed = false;
+                if (VRPlayer.leftHandItem != null)
+                {
+                    PatchHideHandItems.HideLocalPlayerHandItem(isMainHandItem: VRPlayer.isLeftHandMainWeaponHand);
+                }
+                if (VRPlayer.rightHandItem != null)
+                {
+                    PatchHideHandItems.HideLocalPlayerHandItem(isMainHandItem: VRPlayer.isRightHandMainWeaponHand);
+                }
+            }
+        }
+
+        private static bool checkUnsheathingHolsteredDualWieldWeapon(BackReachLocation leftHandBackReach, BackReachLocation rightHandBackReach)
+        {
+            if (!EquipScript.LocalPlayerHasDualWieldingWeaponHolstered())
+            {
+                return false;
+            }
+
+            if (leftHandBackReach != BackReachLocation.LeftShoulderRadialMedial ||
+                rightHandBackReach != BackReachLocation.RightShoulderRadialMedial)
+            {
+                return false;
+            }
+
+            VRPlayer.offHandWield = false;
+
+            playEquippingHaptic(true, true);
+
+            return PatchShowHandItems.ShowLocalPlayerHandItem(isMainHandItem: true);
+        }
+
+        private static bool checkArrowToggle(BackReachLocation backReachLocation)
+        {
+            if (backReachLocation == BackReachLocation.None)
+            {
+                return false;
+            }
+            if (EquipScript.CurrentOffHandEquipType() == EquipType.Bow)
+            {
+                BowLocalManager.instance.toggleArrow();
+                return true;
+            }
+            if (EquipScript.CurrentOffHandEquipType() == EquipType.Crossbow)
+            {
+                CrossbowMorphManager.instance.toggleBolt();
+                return true;
+            }
+            return false;
+        }
+
+        private static bool checkUnsheathingHolsteredNonDualWieldItem(
+            bool isRightHand, BackReachLocation backReachLocation)
+        {
+            if (!canGrabNewWeapon(isRightHand) || EquipScript.LocalPlayerHasDualWieldingWeaponHolstered())
+            {
+                return false;
+            }
+
+            switch (backReachLocation)
+            {
+                case BackReachLocation.RightShoulderRadialMedial:
+                    if (isRightHand && PatchShowHandItems.ShowLocalPlayerHandItem(!VHVRConfig.LeftHanded()))
+                    {
+                        VRPlayer.offHandWield = false;
+                        playEquippingHaptic(false, true);
+                        return true;
+                    }
+                    return false;
+                case BackReachLocation.LeftShoulderRadialMedial:
+                    if (!isRightHand && PatchShowHandItems.ShowLocalPlayerHandItem(VHVRConfig.LeftHanded())) {
+                        VRPlayer.offHandWield = false;
+                        playEquippingHaptic(true, false);
+                        return true;
+                    }
+                    return false;
+                default:
+                    return false;
+            }
+        }
+
+        private static bool checkEquippingWeapon(int inventorySlot, bool isRightHand)
+        {
+            var inventory = Player.m_localPlayer.GetInventory();
+
+            if (inventory == null || inventorySlot < 0)
+            {
+                return false;
+            }
+
+            return TryEquipToHand(inventory.GetItemAt(inventorySlot % 8, inventorySlot / 8), isRightHand);
+        }
+
+        // Equips an unequipped hand item into the given hand. Returns false without doing anything if it is not a hand
+        // item or that hand cannot take it right now.
+        //
+        // Grabbing from the back needs the hand free, no bow, crossbow (other than the grappling hook) or dual wield weapon equipped and no two-handed
+        // wield.
+        // replaceHeldItems (for the radial quick menu of that hand) skips those checks, since equipping replaces what
+        // is held anyway. Otherwise the item would still be equipped, but into whichever hand the previous weapon
+        // was wielded with.
+        public static bool TryEquipToHand(ItemDrop.ItemData item, bool isRightHand, bool replaceHeldItems = false)
+        {
+            if (Player.m_localPlayer == null || item == null || item.m_equipped)
+            {
+                return false;
+            }
+
+            if (EquipScript.GetEquipType(item) == EquipType.None)
+            {
+                return false;
+            }
+
+            var isDualWieldItem = EquipScript.IsDualWeapon(item);
+            var isMainHandItem = IsMainHandItem(item);
+
+            if (EquipScript.IsDualWeapon(item))
+            {
+                if (!replaceHeldItems && !(canGrabNewWeapon(isRightHand: true) && canGrabNewWeapon(isRightHand: false)))
+                {
+                    return false;
+                }
+                VRPlayer.offHandWield = false;
+            }
+            else if (!replaceHeldItems && !canGrabNewWeapon(isRightHand))
+            {
+                return false;
+            }
+            else
+            {
+                bool isLeftHanded = isMainHandItem ^ isRightHand;
+                VRPlayer.offHandWield = isLeftHanded ^ VHVRConfig.LeftHanded();
+            }
+
+            if (isMainHandItem && Player.m_localPlayer.m_hiddenRightItem == item)
+            {
+                PatchShowHandItems.ShowLocalPlayerHandItem(isMainHandItem: true);
+            }
+            else if (!isMainHandItem && Player.m_localPlayer.m_hiddenLeftItem == item)
+            {
+                PatchShowHandItems.ShowLocalPlayerHandItem(isMainHandItem: false);
+            }
+            else
+            {
+                Player.m_localPlayer.UseItem(Player.m_localPlayer.GetInventory(), item, false);
+            }
+
+            return true;
+        }
+
+        private static void updateGrabbedBackReachLocation(BackReachLocation backReach, bool isRightHand)
+        {
+            var inputSource = isRightHand ? VRInputSource.RightHand : VRInputSource.LeftHand;
+
+            if (!grabAction.GetState(inputSource))
+            {
+                if (isRightHand)
+                {
+                    rightHandGrabbedBackLocation = BackReachLocation.None;
+                }
+                else
+                {
+                    leftHandGrabbedBackLocation = BackReachLocation.None;
+                }
+                return;
+            }
+
+            // Only record on grip press down
+            if (!grabAction.GetStateDown(inputSource))
+            {
+                return;
+            }
+
+            if (!canGrabNewWeapon(isRightHand))
+            {
+                return;
+            }
+
+            // Record the location and give haptic feedback
+            if (isRightHand)
+            {
+                rightHandGrabbedBackLocation = canGrabNewWeapon(isRightHand) ? backReach : BackReachLocation.None;
+            }
+            else
+            {
+                leftHandGrabbedBackLocation = canGrabNewWeapon(isRightHand) ? backReach : BackReachLocation.None;
+            }
+
+            playEquippingHaptic(!isRightHand, isRightHand);
+        }
+
+        private static bool checkGripDraw(BackReachLocation leftHandBackReach, BackReachLocation rightHandBackReach)
+        {
+            if (leftHandGrabbedBackLocation == BackReachLocation.None &&
+                rightHandGrabbedBackLocation == BackReachLocation.None)
+            {
+                return false;
+            }
+
+            bool leftHandGripping = grabAction.GetState(VRInputSource.LeftHand);
+            bool rightHandGripping = grabAction.GetState(VRInputSource.RightHand);
+
+            // Check dual grip first
+            if (leftHandGrabbedBackLocation != BackReachLocation.None &&
+                rightHandGrabbedBackLocation != BackReachLocation.None)
+            {
+                if (isDrawingWeapon(leftHandBackReach, VRPlayer.leftHand.transform, VRPlayer.leftHandPhysicsEstimator.GetVelocity()) ||
+                    isDrawingWeapon(rightHandBackReach, VRPlayer.rightHand.transform, VRPlayer.rightHandPhysicsEstimator.GetVelocity()))
+                {
+                    var leftLocation = leftHandGrabbedBackLocation;
+                    var rightLocation = rightHandGrabbedBackLocation;
+                    leftHandGrabbedBackLocation = BackReachLocation.None;
+                    rightHandGrabbedBackLocation = BackReachLocation.None;
+                    return onDualGripDraw(leftLocation, rightLocation);
+                }
+
+                return false;
+            }
+
+            // While both hands are at the waist, where the two-hand items are, a hand that has gripped first may
+            // still be waiting for the other one to grip, so it only draws on its own once it leaves the waist.
+            // Moving fast is not enough there, as the hand is often still settling when it grips.
+            if (isOwnSideWaist(leftHandBackReach) && isOwnSideWaist(rightHandBackReach))
+            {
+                return false;
+            }
+
+            if (rightHandGrabbedBackLocation != BackReachLocation.None &&
+                isDrawingWeapon(rightHandBackReach, VRPlayer.rightHand.transform, VRPlayer.rightHandPhysicsEstimator.GetVelocity()))
+            {
+                var location = rightHandGrabbedBackLocation;
+                rightHandGrabbedBackLocation = BackReachLocation.None;
+                return onSingleGripDraw(isRightHand: true, location);
+            }
+
+            if (leftHandGrabbedBackLocation != BackReachLocation.None &&
+                isDrawingWeapon(leftHandBackReach, VRPlayer.leftHand.transform, VRPlayer.leftHandPhysicsEstimator.GetVelocity()))
+            {
+                var location = leftHandGrabbedBackLocation;
+                leftHandGrabbedBackLocation = BackReachLocation.None;
+                return onSingleGripDraw(isRightHand: false, location);
+            }
+
+            return false;
+        }
+
+        // The waist locations that twoHandBackReachToInventory() pairs up.
+        private static bool isOwnSideWaist(BackReachLocation backReach)
+        {
+            return backReach == BackReachLocation.LeftWaistRadialMedial ||
+                backReach == BackReachLocation.LeftWaistRadialLateral ||
+                backReach == BackReachLocation.RightWaistRadialMedial ||
+                backReach == BackReachLocation.RightWaistRadialLateral;
+        }
+
+        private static bool isDrawingWeapon(
+            BackReachLocation backReach, Transform controller, Vector3 velocity)
+        {
+            if (backReach == BackReachLocation.None)
+            {
+                // Hand leaving back area, consider this as a weapon draw
+                return true;
+            }
+
+            return Mathf.Abs(Vector3.Dot(controller.forward, velocity)) > 1;
+        }
+
+        private static bool onSingleGripDraw(bool isRightHand, BackReachLocation backReach)
+        {
+            var inventorySlot =
+                isRightHand ?
+                rightHandBackReachToInventory(backReach) :
+                leftHandBackReachToInventory(backReach);
+
+            if (!checkEquippingWeapon(inventorySlot, isRightHand))
+            {
+                return false;
+            }
+
+            if (isRightHand)
+            {
+                isRightHandDrawingWeapon = true;
+                playEquippingHaptic(false, true);
+            }
+            else
+            {
+                isLeftHandDrawingWeapon = true;
+                playEquippingHaptic(true, false);
+            }
+
+            return true;
+        }
+
+        private static bool onDualGripDraw(BackReachLocation leftHandBackReach, BackReachLocation rightHandBackReach)
+        {
+            var inventorySlot = twoHandBackReachToInventory(leftHandBackReach, rightHandBackReach, out bool attachToRightHand);
+            if (!checkEquippingWeapon(inventorySlot, attachToRightHand))
+            {
+                return false;
+            }
+            isLeftHandDrawingWeapon = isRightHandDrawingWeapon = true;
+            playEquippingHaptic(true, true);
+            return true;
+        }
+
+        private static bool IsMainHandItem(ItemDrop.ItemData item)
+        {
+            if (EquipScript.GetEquipType(item) == EquipType.Knife)
+            {
+                return !EquipScript.IsCompatibleWithParryingKnife();
+            }
+
+            if (item == Player.m_localPlayer.m_hiddenLeftItem)
+            {
+                return false;
+            }
+
+            return item == Player.m_localPlayer.m_hiddenRightItem || EquipScript.CanUseAsMainHandItem(item);
+        }
+
+        private static int rightHandBackReachToInventory(BackReachLocation backReachLocation)
+        {
+            switch (backReachLocation)
+            {
+                case BackReachLocation.LeftShoulderRadialDown:
+                    return 0;
+                case BackReachLocation.LeftShoulderRadialUp:
+                    return 3;
+                case BackReachLocation.LeftWaistRadialForward:
+                    return 2;
+                case BackReachLocation.LeftWaistRadialBackward:
+                    return 1;
+                // case BackReachLocation.RightShoulderRadialMedial:
+                //    // TODO: enable when legacy equip is disabled
+                //    return 4;
+                case BackReachLocation.RightShoulderRadialLateral:
+                    return 5;
+                case BackReachLocation.RightWaistRadialLateral:
+                    return 6;
+                case BackReachLocation.RightWaistRadialMedial:
+                    return 7;
+                default:
+                    return -1;
+            }
+        }
+
+        private static int leftHandBackReachToInventory(BackReachLocation backReachLocation)
+        {
+            switch (backReachLocation)
+            {
+                // case BackReachLocation.LeftShoulderRadialMedial:
+                // TODO: enable when legacy equip is disabled
+                //    return 0;
+                case BackReachLocation.LeftShoulderRadialLateral:
+                    return 3;
+                case BackReachLocation.LeftWaistRadialLateral:
+                    return 2;
+                case BackReachLocation.LeftWaistRadialMedial:
+                    return 1;
+                case BackReachLocation.RightShoulderRadialDown:
+                    return 4;
+                case BackReachLocation.RightShoulderRadialUp:
+                    return 5;
+                case BackReachLocation.RightWaistRadialForward:
+                    return 6;
+                case BackReachLocation.RightWaistRadialBackward:
+                    return 7;
+                default:
+                    return -1;
+            }
+        }
+
+        private static int twoHandBackReachToInventory(
+            BackReachLocation leftHandBackReach,
+            BackReachLocation rightHandBackReach,
+            out bool attachToRightHand)
+        {
+            if (leftHandBackReach == BackReachLocation.LeftWaistRadialMedial &&
+                rightHandBackReach == BackReachLocation.RightWaistRadialMedial)
+            {
+                attachToRightHand = true;
+                return 14;
+            }
+
+            if (leftHandBackReach == BackReachLocation.LeftWaistRadialLateral &&
+                rightHandBackReach == BackReachLocation.RightWaistRadialLateral)
+            {
+                attachToRightHand = true;
+                return 15;
+            }
+
+            attachToRightHand = false;
+            return -1;
+        }
+
+        private static BackReachLocation getBackReachLocation(Transform handTransform, bool isRightHand)
+        {
+            Camera vrCam = VRPlayer.vrCam;
+            if (vrCam == null)
+            {
+                return BackReachLocation.None;
+            }
+
+            bool trackPelvis = (VHVRConfig.IsHipTrackingEnabled() && VRPlayer.trackedPelvis != null);
+
+            Vector3 playerUp =
+                trackPelvis ?
+                (vrCam.transform.position - VRPlayer.trackedPelvis.position).normalized :
+                vrCam.transform.parent.up;
+
+            Vector3 offsetFromHead = handTransform.position - vrCam.transform.position;
+
+            float verticalOffset = Vector3.Dot(playerUp, offsetFromHead);
+
+            bool reachingShoulder = verticalOffset >= -0.25f && verticalOffset <= 0.125f;
+            bool reachingWaist = verticalOffset >= -0.75f && verticalOffset < -0.375f;
+            if (!reachingShoulder && !reachingWaist)
+            {
+                return BackReachLocation.None;
+            }
+
+            Vector3 facing =
+                Vector3.ProjectOnPlane(trackPelvis ? VRPlayer.trackedPelvis.forward : vrCam.transform.forward, playerUp).normalized;
+            Vector3 playerRight = Vector3.Cross(playerUp, facing);
+
+            float lateralOffset = Vector3.Dot(offsetFromHead, playerRight);
+            float sagittalOffset = Vector3.Dot(offsetFromHead, facing);
+
+            bool reachingRight =
+                reachingShoulder ?
+                lateralOffset > 0 :
+                lateralOffset > (isRightHand ? 0.5f * sagittalOffset : -0.5f * sagittalOffset);
+
+            bool contralateral = (isRightHand ^ reachingRight);
+
+            if (contralateral && reachingShoulder)
+            {
+                if (sagittalOffset > 0.0625f || verticalOffset < -0.2f)
+                {
+                    return BackReachLocation.None;
+                }
+            }
+            else if (contralateral && reachingWaist)
+            {
+                if (sagittalOffset > 0 || Mathf.Abs(lateralOffset) < 0.125f)
+                {
+                    return BackReachLocation.None;
+                }
+            }
+            else if (Mathf.Abs(lateralOffset) > 0.5f)
+            {
+                return BackReachLocation.None;
+            }
+            else if (reachingShoulder)
+            {
+                if (sagittalOffset > 0)
+                {
+                    return BackReachLocation.None;
+                }
+            }
+            else if (sagittalOffset > -0.0625f || sagittalOffset + Mathf.Abs(lateralOffset) * 0.75f > 0)
+            {
+                return BackReachLocation.None;
+            }
+
+            if (reachingShoulder)
+            {
+                if (reachingRight)
+                {
+                    if (contralateral)
+                    {
+                        return Vector3.Dot(handTransform.forward, playerRight + playerUp) < 0 ?
+                            BackReachLocation.RightShoulderRadialDown :
+                            sagittalOffset < 0 || verticalOffset < -0.1f ?
+                            BackReachLocation.RightShoulderRadialUp :
+                            BackReachLocation.None;
+                    }
+                    return Vector3.Dot(handTransform.forward, playerRight) < 0 ||
+                        Vector3.Dot(handTransform.forward, playerUp) < 0 ?
+                        BackReachLocation.RightShoulderRadialMedial :
+                        sagittalOffset < -0.1f ?
+                        BackReachLocation.RightShoulderRadialLateral :
+                        BackReachLocation.None;
+                }
+                else
+                {
+                    if (contralateral)
+                    {
+                        return Vector3.Dot(handTransform.forward, playerRight - playerUp) > 0 ?
+                            BackReachLocation.LeftShoulderRadialDown :
+                            sagittalOffset < 0 || verticalOffset < -0.1f ?
+                            BackReachLocation.LeftShoulderRadialUp :
+                            BackReachLocation.None;
+                    }
+                    return Vector3.Dot(handTransform.forward, playerRight) > 0 ||
+                        Vector3.Dot(handTransform.forward, playerUp) < 0 ?
+                        BackReachLocation.LeftShoulderRadialMedial :
+                        sagittalOffset < -0.1f ?
+                        BackReachLocation.LeftShoulderRadialLateral :
+                        BackReachLocation.None;
+                }
+            }
+
+            // Reaching waist
+            if (reachingRight)
+            {
+                if (Vector3.Dot(handTransform.forward, facing + playerRight * 0.5f) > 0)
+                {
+                    if (contralateral)
+                    {
+                        return sagittalOffset < -0.0625f ?
+                            BackReachLocation.RightWaistRadialForward :
+                            BackReachLocation.None;
+                    }
+                    return BackReachLocation.RightWaistRadialLateral;
+                }
+                return contralateral ?
+                    BackReachLocation.RightWaistRadialBackward :
+                    BackReachLocation.RightWaistRadialMedial;
+            }
+            else
+            {
+                if (Vector3.Dot(handTransform.forward, facing - playerRight * 0.5f) > 0)
+                {
+                    if (contralateral)
+                    {
+                        return sagittalOffset < -0.0625f ?
+                            BackReachLocation.LeftWaistRadialForward :
+                            BackReachLocation.None;
+                    }
+                    return BackReachLocation.LeftWaistRadialLateral;
+                }
+                return contralateral ?
+                    BackReachLocation.LeftWaistRadialBackward :
+                    BackReachLocation.LeftWaistRadialMedial;
+            }
+        }
+
+        private static bool canGrabNewWeapon(bool isRightHand)
+        {
+            if (EquipScript.CurrentMainHandEquipType() == EquipType.Claws)
+            {
+                return true;
+            }
+
+            // Two-handed weapons that can also be wielded with one hand (sledge, atgeir, battleaxe, grappling hook) leave
+            // the other hand free to draw another weapon, except while wielding them with both hands.
+            if (EquipScript.CurrentOffHandEquipType() == EquipType.Bow
+                || (EquipScript.CurrentOffHandEquipType() == EquipType.Crossbow &&
+                    !EquipScript.IsGrapplingHook(Player.m_localPlayer?.GetLeftItem()))
+                || LocalWeaponWield.isCurrentlyTwoHanded()
+                || FistCollision.hasDualWieldingWeaponEquipped()
+                || Player.m_localPlayer == null
+                || Player.m_localPlayer.m_inCraftingStation)
+            {
+                return false;
+            }
+
+            var item = isRightHand ? VRPlayer.rightHandItem : VRPlayer.leftHandItem;
+            return item == null ||  EquipScript.GetEquipType(item) == EquipType.None;
+        }
+
+        private static void playEquippingHaptic(bool leftHand, bool rightHand) {
+            if (leftHand)
+            {
+                VRPlayer.leftHand.hapticAction.Execute(0, 0.2f, 100, 0.3f, VRInputSource.LeftHand);
+            }
+            if (rightHand)
+            {
+                VRPlayer.rightHand.hapticAction.Execute(0, 0.2f, 100, 0.3f, VRInputSource.RightHand);
+            }
         }
     }
 }

@@ -8,6 +8,16 @@ namespace ValheimVRMod.Patches
         public static void DoPatching()
         {
             harmony.PatchAll();
+            DoSteamPatching();
+        }
+
+        private static void DoSteamPatching()
+        {
+            var loadAppIdMethod = AccessTools.Method("SteamManager:LoadAPPID");
+            if (loadAppIdMethod != null)
+            {
+                harmony.Patch(loadAppIdMethod, prefix: new HarmonyMethod(typeof(SteamManager_LoadAppId_Patch), nameof(SteamManager_LoadAppId_Patch.Prefix)));
+            }
         }
         
         /** Example of how to patch hidden classes if needed

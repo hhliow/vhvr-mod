@@ -1,4 +1,5 @@
-﻿using System;
+using ValheimVRMod.VRCore.Backends;
+using System;
 using System.Reflection;
 using System.Collections.Generic;
 using HarmonyLib;
@@ -6,10 +7,11 @@ using UnityEngine;
 using ValheimVRMod.VRCore;
 using ValheimVRMod.Utilities;
 using ValheimVRMod.VRCore.UI;
-using Valve.VR;
 using UnityEngine.UI;
 
 using static ValheimVRMod.Utilities.LogUtils;
+using TMPro;
+using ValheimVRMod.Scripts;
 
 namespace ValheimVRMod.Patches
 {
@@ -82,7 +84,7 @@ namespace ValheimVRMod.Patches
                 {
                     hoverable = null;
                 }
-                Text hoverText = CrosshairManager.instance.hoverNameCloneLeftHand.GetComponent<Text>();
+                TextMeshProUGUI hoverText = CrosshairManager.instance.hoverNameCloneLeftHand.GetComponent<TextMeshProUGUI>();
                 Image crosshair = CrosshairManager.instance.crosshairCloneLeftHand.GetComponent<Image>();
                 if (hoverText == null)
                 {
@@ -114,29 +116,54 @@ namespace ValheimVRMod.Patches
         {
             static void Postfix(Player __instance, IDoodadController ___m_doodadController)
             {
-                if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls())
+                if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls() || Player_UpdateDodge_Patch.wasDodging)
                 {
                     return;
                 }
-                var useAction = VRControls.instance.useLeftHandAction;
-                if (useAction == null)
+                // Not usable while the left hand's own laser pointer is up: otherwise a click meant for a GUI
+                // panel (e.g. in left-handed mode) would also interact with whatever the ray happens to hit
+                // behind or through it.
+                if (LaserPointerChords.IsLaserActiveFor(VRInputSource.LeftHand))
                 {
-                    LogWarning("Left Hand Use Action not initialized.");
                     return;
                 }
-                if (!useAction.GetStateDown(SteamVR_Input_Sources.LeftHand))
+                // Nor while aiming a weapon, whose triggers then shoot or swing-launch, like the right hand's
+                // interact in VRControls.
+                if (LocalWeaponWield.isAiming)
                 {
-                    if (useAction.GetState(SteamVR_Input_Sources.LeftHand) && leftHover)
+                    return;
+                }
+                if (!VRInputActions.valheim_Use.GetStateDown(VRInputSource.LeftHand))
+                {
+                    if (VRInputActions.valheim_Use.GetState(VRInputSource.LeftHand) && leftHover)
                     {
                         __instance.Interact(leftHover, true, false);
                     }
-                } else if (leftHover)
+                }
+                else if (leftHover)
                 {
                     __instance.Interact(leftHover, false, false);
-                } else if (___m_doodadController != null)
-                {
-                    __instance.StopDoodadControl();
                 }
+            }
+        }
+
+        // While the player steers something (riding a mount, at a ship's rudder) the game stops looking for hover
+        // objects: Player.UpdateHover clears m_hovering but never calls FindHoverObject, so the postfix below did not
+        // run either. The left hand's hover and both hands' hit points kept their last values: the left hover text
+        // stayed pinned in the world where the ride began, and the left Use interacted with the mount again instead
+        // of reaching vanilla's dismount. Reset them to "nothing hit" here instead.
+        [HarmonyPatch(typeof(Player), "UpdateHover")]
+        class Player_UpdateHover_Patch
+        {
+            static void Postfix(Player __instance, IDoodadController ___m_doodadController)
+            {
+                if (__instance != Player.m_localPlayer || ___m_doodadController == null || !VHVRConfig.UseVrControls())
+                {
+                    return;
+                }
+                leftHover = null;
+                currentHitPositionRight = Player_FindHoverObject_Patch.MissPosition(VRPlayer.rightPointer);
+                currentHitPositionLeft = Player_FindHoverObject_Patch.MissPosition(VRPlayer.leftPointer);
             }
         }
 
@@ -148,7 +175,17 @@ namespace ValheimVRMod.Patches
 
             private static float raycastDistanceLimit = 50f;
 
-            static void Postfix(Player __instance, ref GameObject hover, int ___m_interactMask)
+            // Where a ray that hits nothing ends, as UpdateHoverObject reports it.
+            internal static Vector3 MissPosition(VRLaserPointer pointer)
+            {
+                if (pointer == null)
+                {
+                    return Vector3.zero;
+                }
+                return pointer.rayStartingPosition + pointer.rayDirection * Vector3.forward * raycastDistanceLimit;
+            }
+
+            static void Postfix(Player __instance, ref GameObject hover, ref Character hoverCreature, int ___m_interactMask)
             {
                 if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls())
                 {
@@ -156,12 +193,13 @@ namespace ValheimVRMod.Patches
                     currentHitPositionLeft = Vector3.zero;
                     return;
                 }
-                UpdateHoverObject(__instance, ref hover, ___m_interactMask, VRPlayer.rightPointer, ref currentHitPositionRight);
-                UpdateHoverObject(__instance, ref leftHover, ___m_interactMask, VRPlayer.leftPointer, ref currentHitPositionLeft);
+                UpdateHoverObject(__instance, ref hover, ref hoverCreature, ___m_interactMask, VRPlayer.rightPointer, ref currentHitPositionRight);
+                UpdateHoverObject(__instance, ref leftHover, ref hoverCreature, ___m_interactMask, VRPlayer.leftPointer, ref currentHitPositionLeft);
             }
 
 
-            private static void UpdateHoverObject(Player instance, ref GameObject hoverReference, int mask, Valve.VR.Extras.SteamVR_LaserPointer pointer, ref Vector3 hitPosition)
+            private static void UpdateHoverObject(
+                Player instance, ref GameObject hoverReference, ref Character hoverCreature, int mask, VRLaserPointer pointer, ref Vector3 hitPosition)
             {
                 if (pointer == null)
                 {
@@ -171,46 +209,51 @@ namespace ValheimVRMod.Patches
                 hoverReference = null;
                 var startingPosition = pointer.rayStartingPosition;
                 var rayDirection = pointer.rayDirection;
-                RaycastHit[] raycastHitArray1 = Physics.RaycastAll(startingPosition, rayDirection * Vector3.forward, raycastDistanceLimit, mask);
-                Array.Sort(raycastHitArray1, (RaycastHit x, RaycastHit y) => x.distance.CompareTo(y.distance));
-                int num = 0;
+                var hits = Physics.RaycastAll(startingPosition, rayDirection * Vector3.forward, raycastDistanceLimit, mask);
+                
+                Array.Sort(hits, (RaycastHit x, RaycastHit y) => x.distance.CompareTo(y.distance));
                 hitPosition = startingPosition + rayDirection * Vector3.forward * raycastDistanceLimit;
-                while (num < raycastHitArray1.Length)
+                for (int i = 0; i < hits.Length; i++)
                 {
-                    RaycastHit raycastHit = raycastHitArray1[num];
-                    if (!raycastHit.collider.attachedRigidbody || !(raycastHit.collider.attachedRigidbody.gameObject == instance.gameObject))
+                    RaycastHit hit = hits[i];
+                    if (hit.collider.attachedRigidbody &&
+                        hit.collider.attachedRigidbody.gameObject == instance.gameObject)
                     {
-                        if (Vector3.Distance(instance.m_eye.position, raycastHit.point) >= instance.m_maxInteractDistance)
+                        continue;
+                    }
+
+                    if (hoverCreature == null)
+                    {
+                        Character character = hit.collider.attachedRigidbody ? hit.collider.attachedRigidbody.GetComponent<Character>() : hit.collider.GetComponent<Character>();
+                        if (character != null &&
+                            (!character.GetBaseAI() || !character.GetBaseAI().IsSleeping()) &&
+                            !ParticleMist.IsMistBlocked(instance.GetCenterPoint(), character.GetCenterPoint()))
                         {
-                            break;
+                            hoverCreature = character;
                         }
-                        hitPosition = raycastHit.point;
-                        if (raycastHit.collider.GetComponent<Hoverable>() != null)
-                        {
-                            hoverReference = raycastHit.collider.gameObject;
-                            return;
-                        }
-                        if (raycastHit.collider.GetComponent<Hoverable>() != null)
-                        {
-                            hoverReference = raycastHit.collider.gameObject;
-                            return;
-                        }
-                        if (!raycastHit.collider.attachedRigidbody)
-                        {
-                            hoverReference = raycastHit.collider.gameObject;
-                            return;
-                        }
-                        hoverReference = raycastHit.collider.attachedRigidbody.gameObject;
+                    }
+
+                    hitPosition = hit.point;
+
+                    if (Vector3.Distance(instance.m_eye.position, hitPosition) >= instance.m_maxInteractDistance)
+                    {
                         return;
+                    }
+
+                    if (hit.collider.GetComponent<Hoverable>() != null ||
+                        !hit.collider.attachedRigidbody ||
+                        BuildingManager.IsModdedStructure(hit.collider.attachedRigidbody.name)) // Added Compatibility to Valheim Raft Mod object
+                    {
+                        hoverReference = hit.collider.gameObject;
                     }
                     else
                     {
-                        num++;
+                        hoverReference = hit.collider.attachedRigidbody.gameObject;
                     }
+
+                    return;
                 }
             }
         }
-
-
     }
 }

@@ -1,3 +1,4 @@
+using ValheimVRMod.VRCore.Backends;
 using UnityEngine;
 using ValheimVRMod.Utilities;
 using ValheimVRMod.VRCore;
@@ -5,65 +6,141 @@ using ValheimVRMod.VRCore;
 namespace ValheimVRMod.Scripts.Block {
     public class ShieldBlock : Block {
 
-        public string itemName;
-        private const float maxParryAngle = 45f;
+        private const float MIN_PARRY_ENTRY_SPEED = 1.5f;
+        private const float MAX_PARRY_ANGLE = 150f;
+        private const float PARRY_EXIT_SPEED = 0.2f;
+        private const int PARRY_CHECK_INTERVAL = 3;
+        private static float PARRY_WINDOW_EASING_FACTOR { get { return VHVRConfig.UseRealisticBlock() ? 0.5f : VHVRConfig.UseGestureBlock() ? 0.75f : 1; } }
 
         private float scaling = 1f;
         private Vector3 posRef;
+        // Where the hand holds the shield, in the same space as posRef.
+        private Vector3 gripRef;
         private Vector3 scaleRef;
-        
+        private float adaptScaleRef = 1f;
+        private bool attemptingParry;
+        private int parryCheckFixedUpateTicker = 0;
+        private Vector3 shieldFacing { get { return VRPlayer.isRightHandMainWeaponHand ? -VRPlayer.leftHand.transform.right : VRPlayer.rightHand.transform.right; } }
+        private MeshFilter meshFilter;
+
         public static ShieldBlock instance;
+
+        private PhysicsEstimator parryPhysicsEstimator
+        {
+            get
+            {
+                var shieldHand = VRPlayer.isRightHandMainWeaponHand ? VRPlayer.leftHand : VRPlayer.rightHand;
+                if (shieldHand == null)
+                {
+                    return physicsEstimator;
+                }
+                var handPhysicsEstimator =
+                    VRPlayer.isRightHandMainWeaponHand ? VRPlayer.leftHandPhysicsEstimator : VRPlayer.rightHandPhysicsEstimator;
+                return handPhysicsEstimator != null ? handPhysicsEstimator : physicsEstimator;
+            }
+        }
 
         private void OnDisable() {
             instance = null;
         }
         
-        private void Awake() {
+        protected override void Awake() {
+            base.Awake();
             _meshCooldown = gameObject.AddComponent<MeshCooldown>();
             instance = this;
             InitShield();
         }
-        
+
+        protected override void FixedUpdate()
+        {
+            base.FixedUpdate();
+
+            // Parry time restriction is made more lenient for realistic blocking to balance difficulty.
+            blockTimer += Time.fixedDeltaTime * PARRY_WINDOW_EASING_FACTOR;
+
+            if (++parryCheckFixedUpateTicker >= PARRY_CHECK_INTERVAL)
+            {
+                CheckParryMotion();
+                parryCheckFixedUpateTicker = 0;
+            }
+        }
+
         private void InitShield()
         {
-            posRef = _meshCooldown.transform.localPosition;
-            scaleRef = _meshCooldown.transform.localScale;
-            hand = VHVRConfig.LeftHanded() ? VRPlayer.rightHand.transform : VRPlayer.leftHand.transform;
+            posRef = transform.localPosition;
+            scaleRef = transform.localScale;
+            var visEquipment = Player.m_localPlayer.m_visEquipment;
+            var shieldHandAttachPoint = VRPlayer.isRightHandMainWeaponHand ? visEquipment.m_leftHand : visEquipment.m_rightHand;
+            gripRef = transform.parent.InverseTransformPoint(shieldHandAttachPoint.position);
+            hand = VRPlayer.mainWeaponHand.otherHand.transform;
+            offhand = VRPlayer.mainWeaponHand.transform;
+            
+            meshFilter = gameObject.GetComponentInChildren<MeshFilter>();
+            var mesh = meshFilter.sharedMesh;
+            var shieldWideSize = WeaponUtils.EstimateShieldWidth(mesh) * transform.lossyScale.x;
+            var shieldMaxWidth =
+                IsBuckler(Player.m_localPlayer.GetLeftItem()) ? VHVRConfig.GetMaxBucklerWidth() : VHVRConfig.GetMaxShieldWidth();
+            var scaleShieldSetting = VHVRConfig.GetShieldScaleSetting();
+            adaptScaleRef = Mathf.Min(scaleShieldSetting, shieldMaxWidth / shieldWideSize);
+            AdaptScaleShieldSize(1f);
         }
 
-        public override void setBlocking(Vector3 hitDir) {
-            _blocking = Vector3.Dot(hitDir, getForward()) > 0.5f;
-        }
-
-        private Vector3 getForward() {
-            switch (itemName)
+        // Bucklers are told apart from other shields by their name, which holds for all vanilla ones.
+        private static bool IsBuckler(ItemDrop.ItemData item)
+        {
+            const string BUCKLER = "buckler";
+            if (item == null)
             {
-                case "ShieldWood":
-                case "ShieldBanded":
-                    return StaticObjects.shieldObj().transform.forward;
-                case "ShieldKnight":
-                    return -StaticObjects.shieldObj().transform.right;
-                case "ShieldBronzeBuckler":
-                case "ShieldIronBuckler":
-                    return -StaticObjects.shieldObj().transform.up;
+                return false;
             }
-            return -StaticObjects.shieldObj().transform.forward;
+            return item.m_shared.m_name.ToLowerInvariant().Contains(BUCKLER) ||
+                (item.m_dropPrefab != null && item.m_dropPrefab.name.ToLowerInvariant().Contains(BUCKLER));
         }
-        protected override void ParryCheck(Vector3 posStart, Vector3 posEnd) {
 
-            if (Vector3.Distance(posEnd, posStart) > minDist) {
-                
-                Vector3 shieldPos = snapshots[snapshots.Count - 1] + Player.m_localPlayer.transform.InverseTransformDirection(-hand.right) / 2;
-                if (Vector3.Angle(shieldPos - snapshots[0] , snapshots[snapshots.Count - 1] - snapshots[0]) < maxParryAngle) {
-                    blockTimer = blockTimerParry;
+        public override void setBlocking(HitData hitData) {
+            if (VHVRConfig.UseGrabButtonBlock())
+            {
+                _blocking = VRInputActions.valheim_Grab.GetState(VRPlayer.secondaryWeaponHandInputSource);
+                return;
+            }
+
+            if (VHVRConfig.UseRealisticBlock() && !hitIntersectsBlockBox(hitData))
+            {
+                _blocking = false;
+            }
+            else
+            {
+                var shieldFacingAlignment = Vector3.Dot(hitData.m_dir, shieldFacing);
+                var v = parryPhysicsEstimator.GetVelocity();
+                _blocking =
+                    v.magnitude > MIN_PARRY_ENTRY_SPEED && Mathf.Abs(Vector3.Dot(hitData.m_dir, Vector3.Normalize(v))) < 0.7f ?
+                    shieldFacingAlignment < 0.5f :
+                    VHVRConfig.UseRealisticBlock() ?
+                    shieldFacingAlignment < -0.25f :
+                    shieldFacingAlignment < -0.5f;
+            }
+
+            CheckParryMotion();
+        }
+
+        private void CheckParryMotion() {
+            Vector3 v = parryPhysicsEstimator.GetVelocity();
+            if (v.magnitude > MIN_PARRY_ENTRY_SPEED) {
+                if (!attemptingParry)
+                {
+                    blockTimer = 0;
+                    attemptingParry = true;
                 }
-                
-            } else {
+            }
+            else if (attemptingParry && parryPhysicsEstimator.GetAverageVelocityInSnapshots().magnitude < PARRY_EXIT_SPEED)
+            {
                 blockTimer = blockTimerNonParry;
+                attemptingParry = false;
             }
         }
 
-        private void OnRenderObject() {
+        protected override void OnRenderObject() {
+            base.OnRenderObject();
             if (scaling != 1f)
             {
                 transform.localScale = scaleRef * scaling;
@@ -74,16 +151,22 @@ namespace ValheimVRMod.Scripts.Block {
                 transform.localScale = scaleRef;
                 transform.localPosition = posRef;
             }
+            StaticObjects.shieldObj().transform.position = transform.position;
             StaticObjects.shieldObj().transform.rotation = transform.rotation;
-            
+
+            Vector3 v = physicsEstimator.GetVelocity();
         }
-        public void ScaleShieldSize(float scale)
+
+        public void AdaptScaleShieldSize(float scale)
         {
-            scaling = scale;
+            scaling = adaptScaleRef * scale;
         }
+
         private Vector3 CalculatePos()
         {
-            return VRPlayer.leftHand.transform.InverseTransformDirection(hand.TransformDirection(posRef) *(scaleRef * scaling).x);
+            // Scales the shield about where the hand holds it, which what it is attached by may be beside (see
+            // HeldItemFixes).
+            return gripRef + (posRef - gripRef) * scaling;
         }
     }
 }

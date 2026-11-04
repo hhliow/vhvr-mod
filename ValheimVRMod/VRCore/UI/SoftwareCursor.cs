@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using UnityEngine.UI;
 using System.Runtime.InteropServices;
 using ValheimVRMod.Utilities;
@@ -19,6 +19,7 @@ namespace ValheimVRMod.VRCore.UI
         private static SoftwareCursor _cursorInstance;
         public RectTransform parent;
         private static Vector3 lastCursorPosition = Vector3.zero;
+        public static Vector3 simulatedScreenSize = new Vector3(Screen.width, Screen.height);
 
         private bool cursorVisible;
 
@@ -34,8 +35,8 @@ namespace ValheimVRMod.VRCore.UI
                 Vector2 position = lastCursorPosition;
                 // Shift from 0,0 in center to 0,0 is top left
                 position += new Vector2(p.rect.width, p.rect.height) * 0.5f;
-                float xScale = p.rect.width / Screen.width;
-                float yScale = p.rect.height / Screen.height;
+                float xScale = p.rect.width / VRGUI.GUI_DIMENSIONS.x;
+                float yScale = p.rect.height / VRGUI.GUI_DIMENSIONS.y;
                 return new Vector3(position.x / xScale, position.y / yScale);
             } set
             {
@@ -44,8 +45,8 @@ namespace ValheimVRMod.VRCore.UI
                     return;
                 }
                 RectTransform p = instance.GetComponent<SoftwareCursor>().parent;
-                float xScale = p.rect.width / Screen.width;
-                float yScale = p.rect.height / Screen.height;
+                float xScale = p.rect.width / VRGUI.GUI_DIMENSIONS.x;
+                float yScale = p.rect.height / VRGUI.GUI_DIMENSIONS.y;
                 float xValue = value.x * xScale;
                 float yValue = value.y * yScale;
                 Vector2 lastPosition = new Vector2(xValue, yValue);
@@ -57,6 +58,10 @@ namespace ValheimVRMod.VRCore.UI
         public static GameObject instance { get {
                 if (_cursorInstance == null && searchForCursorTexture())
                 {
+                    if (VHVRConfig.NonVrPlayer())
+                    {
+                        LogUtils.LogWarning("Software cursor should not be used in flatscreen mode.");
+                    }
                     _instance = new GameObject("VRSoftwareCursor");
                     _instance.layer = LayerMask.NameToLayer("UI");
                     var canvasGroup = _instance.AddComponent<CanvasGroup>();
@@ -118,27 +123,48 @@ namespace ValheimVRMod.VRCore.UI
         {
             if (parent == null)
             {
-                LogDebug("Parent of SoftwareCursor is null.");
                 return;
             }
             instance.SetActive(true);
-            Rect rect = parent.rect;
-            float deltaX = Input.GetAxis("Mouse X");
-            float deltaY = Input.GetAxis("Mouse Y");
-            Vector2 newPosition = lastCursorPosition;
-            if (Cursor.visible && !cursorVisible)
+            // We only need to update the "lastCursorPosition" if we are using KB&M controls.
+            // The value gets updated by the laser pointer intersection logic in VRGUI when
+            // using motion controls.
+            if (!VHVRConfig.UseVrControls())
             {
-                // Cursor just became visible this update, so re-center it.
-                newPosition = rect.center;
+                Rect rect = parent.rect;
+                float deltaX = Input.GetAxis("Mouse X");
+                float deltaY = Input.GetAxis("Mouse Y");
+                Vector2 newPosition = lastCursorPosition;
+                if (Cursor.visible && !cursorVisible)
+                {
+                    // Cursor just became visible this update, so re-center it.
+                    newPosition = rect.center;
+                }
+                cursorVisible = Cursor.visible;
+                newPosition.x += deltaX * CURSOR_SPEED * PlayerController.m_mouseSens;
+                newPosition.y += deltaY * CURSOR_SPEED * PlayerController.m_mouseSens;
+                newPosition.x = Mathf.Clamp(newPosition.x, rect.xMin, rect.xMax);
+                newPosition.y = Mathf.Clamp(newPosition.y, rect.yMin, rect.yMax);
+                lastCursorPosition = newPosition;
             }
-            cursorVisible = Cursor.visible;
-            newPosition.x += deltaX * CURSOR_SPEED * PlayerController.m_mouseSens;
-            newPosition.y += deltaY * CURSOR_SPEED * PlayerController.m_mouseSens;
-            newPosition.x = Mathf.Clamp(newPosition.x, rect.xMin, rect.xMax);
-            newPosition.y = Mathf.Clamp(newPosition.y, rect.yMin, rect.yMax);
-            lastCursorPosition = newPosition;
-            // Update position of cursor within canvas rect
-            instance.transform.localPosition = newPosition;
+            // Update position of cursor within canvas rect. The position is projected through the
+            // canvas camera, i.e. the same mapping the EventSystem uses to resolve clicks, instead of
+            // being used as a raw local offset. The latter assumes the cursor canvas sits centered on
+            // that camera with unit scale and a centered pivot, and once that stops holding the drawn
+            // cursor drifts away from the point the laser pointer actually clicks.
+            var canvas = parent.GetComponentInParent<Canvas>();
+            var canvasCamera = canvas == null ? null : canvas.rootCanvas.worldCamera;
+            Vector2 localPoint;
+            if (canvasCamera != null &&
+                RectTransformUtility.ScreenPointToLocalPointInRectangle(
+                    parent, simulatedMousePosition, canvasCamera, out localPoint))
+            {
+                instance.transform.localPosition = localPoint;
+            }
+            else
+            {
+                instance.transform.localPosition = lastCursorPosition;
+            }
         }
 
         // TODO: Find if there is a better way to grab
@@ -158,6 +184,39 @@ namespace ValheimVRMod.VRCore.UI
                 }
             }
             return false;
+        }
+
+        public static Vector3 ScaledMouseVector()
+        {
+            var mousepos = simulatedMousePosition;
+            float mousefromcenterx = mousepos.x - VRGUI.GUI_DIMENSIONS.x / 2;
+            float mousefromcentery = mousepos.y - VRGUI.GUI_DIMENSIONS.y / 2;
+            float diffx = VRGUI.GUI_DIMENSIONS.x - simulatedScreenSize.x;
+            float diffy = VRGUI.GUI_DIMENSIONS.y - simulatedScreenSize.y;
+            float xconv = (mousepos.x * simulatedScreenSize.x / VRGUI.GUI_DIMENSIONS.x) + (mousefromcenterx * diffx / VRGUI.GUI_DIMENSIONS.x);
+            float yconv = (mousepos.y * simulatedScreenSize.y / VRGUI.GUI_DIMENSIONS.y) + (mousefromcentery * diffy / VRGUI.GUI_DIMENSIONS.y);
+            return new Vector3(xconv, yconv, mousepos.z);
+        }
+
+        // Returns the world position under the simulated cursor, offset by `cursorOffset` in cursor
+        // coordinates, on the plane of the canvas that "reference" belongs to. Projecting through the
+        // canvas camera is the same mapping the EventSystem uses to resolve clicks, so anything placed
+        // with this lands under the cursor no matter how the canvas position, the captured screen size
+        // and the UI panel resolution relate to each other. ScaledMouseVector() only agrees with it
+        // when all three happen to coincide, so it is kept as a fallback for a camera-less canvas.
+        public static Vector3 CursorWorldPosition(Transform reference, Vector2 cursorOffset)
+        {
+            RectTransform rect = reference as RectTransform;
+            Canvas canvas = rect == null ? null : rect.GetComponentInParent<Canvas>();
+            Camera camera = canvas == null ? null : canvas.rootCanvas.worldCamera;
+            Vector3 worldPoint;
+            if (camera != null &&
+                RectTransformUtility.ScreenPointToWorldPointInRectangle(
+                    rect, (Vector2)simulatedMousePosition + cursorOffset, camera, out worldPoint))
+            {
+                return worldPoint;
+            }
+            return ScaledMouseVector() + (Vector3)cursorOffset;
         }
     }
 }

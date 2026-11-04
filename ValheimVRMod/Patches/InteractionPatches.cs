@@ -6,18 +6,32 @@ using ValheimVRMod.Scripts;
 using ValheimVRMod.Utilities;
 using System.Collections.Generic;
 using System.Reflection.Emit;
-using Pose = ValheimVRMod.Utilities.Pose;
+using UnityEngine.EventSystems;
 
 
 namespace ValheimVRMod.Patches
 {
-    
+    enum HandItemPatchTarget
+    {
+        Both = 0,
+        MainHandOnly = 1,
+        OffHandOnly = 2
+    }
+
     [HarmonyPatch(typeof(Humanoid), "HideHandItems")]
     class PatchHideHandItems
     {
         
         private static MethodInfo setupVisEquipmentMethod = AccessTools.Method(typeof(Humanoid), "SetupVisEquipment");
         
+        private static HandItemPatchTarget shouldChange;
+
+        public static void HideLocalPlayerHandItem(bool isMainHandItem) {
+            shouldChange = isMainHandItem ? HandItemPatchTarget.MainHandOnly : HandItemPatchTarget.OffHandOnly;
+            Player.m_localPlayer.HideHandItems();
+            shouldChange = HandItemPatchTarget.Both;      
+        }
+
         static bool Prefix(ref Humanoid __instance,
             ref ItemDrop.ItemData ___m_leftItem, ref ItemDrop.ItemData ___m_rightItem, 
             ref ItemDrop.ItemData ___m_hiddenLeftItem, ref ItemDrop.ItemData ___m_hiddenRightItem, 
@@ -26,29 +40,33 @@ namespace ValheimVRMod.Patches
             if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls()) {
                 return true;
             }
-            
-            bool leftHand = Pose.toggleShowLeftHand;
-            bool rightHand = Pose.toggleShowRightHand;
-            
-            Pose.toggleShowRightHand = true;
-            Pose.toggleShowLeftHand = true;
-    
-            if (___m_leftItem == null && ___m_rightItem == null) {
-                return false;   
+
+            if (shouldChange == HandItemPatchTarget.Both ||
+                (shouldChange == HandItemPatchTarget.MainHandOnly ? HeldConsumable.isHoldingInMainHand : HeldConsumable.isHoldingInOffHand))
+            {
+                // E. g. when starting to swim.
+                HeldConsumable.PutAway(restoreWeapon: false);
             }
-    
-            if (leftHand) {
-                ItemDrop.ItemData leftItem = ___m_leftItem;
-                __instance.UnequipItem(___m_leftItem);
-                ___m_hiddenLeftItem = leftItem;
+
+            if (___m_leftItem == null && ___m_rightItem == null)
+            {
+                return false;
             }
-    
-            if (rightHand) {
-                ItemDrop.ItemData rightItem = ___m_rightItem;
+
+            if (shouldChange != HandItemPatchTarget.OffHandOnly)
+            {
+                var itemToHide = ___m_rightItem != null ? ___m_rightItem : ___m_hiddenRightItem;
                 __instance.UnequipItem(___m_rightItem);
-                ___m_hiddenRightItem = rightItem;                
+                ___m_hiddenRightItem = itemToHide;
             }
-            
+
+            if (shouldChange != HandItemPatchTarget.MainHandOnly)
+            {
+                var itemToHide = ___m_leftItem != null ? ___m_leftItem : ___m_hiddenLeftItem;
+                __instance.UnequipItem(___m_leftItem);
+                ___m_hiddenLeftItem = itemToHide;
+            }
+
             setupVisEquipmentMethod.Invoke(__instance, new object[]{___m_visEquipment, false});
             ___m_zanim.SetTrigger("equip_hip");
     
@@ -60,52 +78,136 @@ namespace ValheimVRMod.Patches
     [HarmonyPatch(typeof(Humanoid), "ShowHandItems")]
     class PatchShowHandItems
     {
-    
+        private static HandItemPatchTarget shouldChange;
+
+        public static bool ShowLocalPlayerHandItem(bool isMainHandItem)
+        {
+            if (isMainHandItem ? Player.m_localPlayer.m_hiddenRightItem == null : Player.m_localPlayer.m_hiddenLeftItem == null)
+            {
+                return false;
+            }
+            shouldChange = isMainHandItem ? HandItemPatchTarget.MainHandOnly : HandItemPatchTarget.OffHandOnly;
+            Player.m_localPlayer.ShowHandItems();
+            shouldChange = HandItemPatchTarget.Both;
+            // The item stays hidden if it could not be equipped.
+            return isMainHandItem ? Player.m_localPlayer.m_hiddenRightItem == null : Player.m_localPlayer.m_hiddenLeftItem == null;
+        }
+
         static bool Prefix(ref Humanoid __instance,
             ref ItemDrop.ItemData ___m_hiddenLeftItem, ref ItemDrop.ItemData ___m_hiddenRightItem,
             ref ZSyncAnimation ___m_zanim)
-        {
-            
+        {  
             if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls()) {
                 return true;
             }
     
-            bool leftHand = Pose.toggleShowLeftHand;
-            bool rightHand = Pose.toggleShowRightHand;
-            
-            Pose.toggleShowRightHand = true;
-            Pose.toggleShowLeftHand = true;
-            
-            if (___m_hiddenLeftItem == null && ___m_hiddenRightItem == null) {
-                return false;   
-            }
-    
-            if (leftHand) {
-                ItemDrop.ItemData hiddenLeftItem =___m_hiddenLeftItem;
-                ___m_hiddenLeftItem = null;
-                if (hiddenLeftItem != null) {
-                    var item = ___m_hiddenRightItem;
-                    __instance.EquipItem(hiddenLeftItem);
-                    ___m_hiddenRightItem = item;
-                    __instance.SetupVisEquipment(__instance.m_visEquipment, false);
-                }
-            }
-    
-            if (rightHand)
+            var hiddenLeftItem = ___m_hiddenLeftItem;
+            var hiddenRightItem = ___m_hiddenRightItem;
+            if (hiddenLeftItem == null && hiddenRightItem == null)
             {
-                ItemDrop.ItemData hiddenRightItem = ___m_hiddenRightItem;
+                return false;
+            }
+
+            // EquipItem() can refuse (e.g. while the player is in an attack or dodge animation, which quickly
+            // holstering and unholstering can run into). Keep the item hidden in that case, otherwise it would be
+            // neither equipped nor holstered and could not be unholstered anymore.
+            if (shouldChange != HandItemPatchTarget.OffHandOnly && ___m_hiddenRightItem != null)
+            {
                 ___m_hiddenRightItem = null;
-                if (hiddenRightItem != null) {
-                    var item = ___m_hiddenLeftItem;
-                    __instance.EquipItem(hiddenRightItem);
-                    ___m_hiddenLeftItem = item;
-                    __instance.SetupVisEquipment(__instance.m_visEquipment, false);
+                bool equipped = __instance.EquipItem(hiddenRightItem);
+                ___m_hiddenLeftItem = hiddenLeftItem;
+                if (!equipped)
+                {
+                    ___m_hiddenRightItem = hiddenRightItem;
+                }
+                __instance.SetupVisEquipment(__instance.m_visEquipment, false);
+            }
+            if (shouldChange != HandItemPatchTarget.MainHandOnly && ___m_hiddenLeftItem != null)
+            {
+                ___m_hiddenLeftItem = null;
+                bool equipped = __instance.EquipItem(hiddenLeftItem);
+                ___m_hiddenRightItem = hiddenRightItem;
+                if (!equipped)
+                {
+                    ___m_hiddenLeftItem = hiddenLeftItem;
+                }
+                __instance.SetupVisEquipment(__instance.m_visEquipment, false);
+            }
+
+            ___m_zanim.SetTrigger("equip_hip");
+
+            shouldChange = HandItemPatchTarget.Both; // Patching is done.
+
+            return false;
+        }
+    }
+
+    // Using a food or mead puts it in the hand, to be consumed with a gesture, rather than consuming it right away.
+    [HarmonyPatch(typeof(Player), nameof(Player.ConsumeItem))]
+    class PatchConsumeItem
+    {
+        static bool Prefix(Player __instance, Inventory inventory, ItemDrop.ItemData item, bool checkWorldLevel, ref bool __result)
+        {
+            if (__instance != Player.m_localPlayer || !VHVRConfig.UseVrControls() || HeldConsumable.isConsuming)
+            {
+                return true;
+            }
+
+            // Food eaten directly from a container is consumed right away as usual.
+            if (inventory != __instance.GetInventory())
+            {
+                return true;
+            }
+
+            // Hands are kept empty while swimming, so the food is eaten right away.
+            if (__instance.IsSwimming() && !__instance.IsOnGround())
+            {
+                return true;
+            }
+
+            // Returning false keeps Humanoid.UseItem() from playing the eating effects.
+            __result = false;
+            if (HeldConsumable.IsHolding(item))
+            {
+                HeldConsumable.PutAway(restoreWeapon: true);
+            }
+            else
+            {
+                // Whether it can be consumed is checked when it is brought to the mouth.
+                HeldConsumable.Hold(inventory, item);
+                // With the food in hand the inventory is in the way, unless a container is open to go on with.
+                if (InventoryGui.IsVisible() && !InventoryGui.instance.IsContainerOpen())
+                {
+                    InventoryGui.instance.Hide();
                 }
             }
-            
-            ___m_zanim.SetTrigger("equip_hip");
-            
             return false;
+        }
+    }
+
+    // A middle click on a food or mead in the inventory consumes it right away, like the vanilla right click.
+    [HarmonyPatch(typeof(UIInputHandler), nameof(UIInputHandler.OnPointerDown))]
+    class PatchInventoryMiddleClick
+    {
+        static void Postfix(UIInputHandler __instance, PointerEventData eventData)
+        {
+            if (eventData.button != PointerEventData.InputButton.Middle || !VHVRConfig.UseVrControls() || Player.m_localPlayer == null)
+            {
+                return;
+            }
+
+            var grid = __instance.GetComponentInParent<InventoryGrid>();
+            if (grid == null || grid.GetInventory() == null)
+            {
+                return;
+            }
+
+            Vector2i pos = grid.GetButtonPos(__instance.gameObject);
+            var item = grid.GetInventory().GetItemAt(pos.x, pos.y);
+            if (item != null && item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Consumable)
+            {
+                HeldConsumable.ConsumeRightAway(grid.GetInventory(), item);
+            }
         }
     }
 
@@ -113,9 +215,9 @@ namespace ValheimVRMod.Patches
     class PatchInventoryChanged {
 
         static void Postfix() {
-            if (StaticObjects.quickSwitch != null && VHVRConfig.UseVrControls()) {
-                StaticObjects.quickSwitch.GetComponent<QuickSwitch>()?.refreshItems();
-                StaticObjects.quickActions.GetComponent<QuickActions>()?.refreshItems();
+            if (StaticObjects.rightHandQuickMenu != null && VHVRConfig.UseVrControls()) {
+                StaticObjects.rightHandQuickMenu.GetComponent<RightHandQuickMenu>()?.refreshItems();
+                StaticObjects.leftHandQuickMenu.GetComponent<LeftHandQuickMenu>()?.refreshItems();
             }
         }
     }
@@ -124,9 +226,9 @@ namespace ValheimVRMod.Patches
     class PatchOnSelectedItem {
 
         static void Postfix() {
-            if (StaticObjects.quickSwitch != null && VHVRConfig.UseVrControls()) {
-                StaticObjects.quickSwitch.GetComponent<QuickSwitch>().refreshItems();
-                StaticObjects.quickActions.GetComponent<QuickActions>().refreshItems();
+            if (StaticObjects.rightHandQuickMenu != null && VHVRConfig.UseVrControls()) {
+                StaticObjects.rightHandQuickMenu.GetComponent<RightHandQuickMenu>().refreshItems();
+                StaticObjects.leftHandQuickMenu.GetComponent<LeftHandQuickMenu>().refreshItems();
             }
         }
     }
@@ -134,41 +236,10 @@ namespace ValheimVRMod.Patches
     [HarmonyPatch(typeof(Humanoid), "UnequipItem")]
     class PatchUnEquipItem {
 
-        static void Prefix(Humanoid __instance, ItemDrop.ItemData item, ItemDrop.ItemData ___m_leftItem, ItemDrop.ItemData ___m_rightItem) {
-
-            if (__instance.GetType() != typeof(Player)) {
-                return;
-            }
-
-            var vrPlayerSync = __instance.GetComponent<VRPlayerSync>();
-            
-            if (vrPlayerSync != null && (__instance != Player.m_localPlayer || VHVRConfig.UseVrControls())) {
-                if (item == ___m_leftItem) {
-                    if (VHVRConfig.LeftHanded()) {
-                        vrPlayerSync.currentRightWeapon = null;
-                    }
-                    else {
-                        vrPlayerSync.currentLeftWeapon = null;   
-                    }
-                }
-
-                if (item == ___m_rightItem) {
-                    if (VHVRConfig.LeftHanded()) {
-                        vrPlayerSync.currentLeftWeapon = null;
-                    }
-                    else {
-                        vrPlayerSync.currentRightWeapon = null;   
-                    }
-                }
-
-                VrikCreator.resetVrikHandTransform(__instance);
-            }
-        }
-
         static void Postfix() {
-            if (StaticObjects.quickSwitch != null) {
-                StaticObjects.quickSwitch.GetComponent<QuickSwitch>().refreshItems();
-                StaticObjects.quickActions.GetComponent<QuickActions>().refreshItems();
+            if (StaticObjects.rightHandQuickMenu != null) {
+                StaticObjects.rightHandQuickMenu.GetComponent<RightHandQuickMenu>().refreshItems();
+                StaticObjects.leftHandQuickMenu.GetComponent<LeftHandQuickMenu>().refreshItems();
             }
         }
     }
@@ -182,14 +253,30 @@ namespace ValheimVRMod.Patches
                 return;
             }
             
-            if (StaticObjects.quickActions != null) {
-                StaticObjects.quickActions.GetComponent<QuickActions>().refreshItems();
+            if (StaticObjects.leftHandQuickMenu != null) {
+                StaticObjects.leftHandQuickMenu.GetComponent<LeftHandQuickMenu>().refreshItems();
+                StaticObjects.rightHandQuickMenu.GetComponent<RightHandQuickMenu>().refreshItems();
+            }
+        }
+    }
+
+    // With motion controls disabled, the aim of attacks follows the mouse rather than the head, see MouseAim.
+    // It is kept parallel to the crosshair's direction wherever the attack starts from, so that the two meet at
+    // infinity rather than at whatever happens to be under the crosshair.
+    [HarmonyPatch(typeof(Humanoid), nameof(Humanoid.GetAimDir))]
+    class KBandMouse_GetAimDirPatch
+    {
+        static void Postfix(Humanoid __instance, ref Vector3 __result)
+        {
+            if (__instance == Player.m_localPlayer && MouseAim.IsActive)
+            {
+                __result = MouseAim.Forward;
             }
         }
     }
 
     // This swaps the Raycast camera from the original game camera to the VR camera
-    // so that the interaction aligns with the player's head orientation. This
+    // so that the interaction starts at the player's head, along the direction of MouseAim. This
     // only impacts M&KB players since interaction is done using Hands with VR controls enabled
     [HarmonyPatch(typeof(Player), nameof(Player.FindHoverObject))]
     class KBandMouse_FindHoverObjectPatch
@@ -215,6 +302,10 @@ namespace ValheimVRMod.Patches
 
         private static Vector3 GetVRCameraForward()
         {
+            if (MouseAim.IsActive)
+            {
+                return MouseAim.Forward;
+            }
             if (!vrCam)
             {
                 vrCam = CameraUtils.getCamera(CameraUtils.VR_CAMERA);
@@ -229,8 +320,9 @@ namespace ValheimVRMod.Patches
 
         static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
         {
-            if (VHVRConfig.UseVrControls())
+            if (VHVRConfig.UseVrControls() || VHVRConfig.NonVrPlayer())
             {
+                LogUtils.LogDebug("Skipping KBandMouse_FindHoverObjectPatch patch.");
                 return instructions;
             }
             var original = new List<CodeInstruction>(instructions);

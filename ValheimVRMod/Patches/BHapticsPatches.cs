@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using HarmonyLib;
 using ValheimVRMod.Utilities;
@@ -6,6 +6,7 @@ using ValheimVRMod.Scripts;
 using UnityEngine;
 using System.Threading;
 using System.Collections.Generic;
+using ValheimVRMod.VRCore;
 
 namespace ValheimVRMod.Patches
 {
@@ -117,7 +118,7 @@ namespace ValheimVRMod.Patches
     /**
     * on arrow release
     */
-    [HarmonyPatch(typeof(Attack), "OnAttackTrigger")]
+    [HarmonyPatch(typeof(Attack), nameof(Attack.OnAttackTrigger))]
     class Attack_ArrowThrowing_Patch
     {
         public static void Postfix(Attack __instance)
@@ -126,11 +127,11 @@ namespace ValheimVRMod.Patches
             {
                 return;
             }
-            if (EquipScript.getLeft() == EquipType.Bow)
+            if (EquipScript.CurrentOffHandEquipType() == EquipType.Bow)
             {
-                BhapticsTactsuit.PlaybackHaptics(VHVRConfig.LeftHanded() ? "ArrowThrowLeft" : "ArrowThrowRight", 2.0f); 
+                BhapticsTactsuit.PlaybackHaptics(VRPlayer.isRightHandMainWeaponHand ? "ArrowThrowRight" : "ArrowThrowLeft", 2.0f); 
                 // arms tactosy
-                BhapticsTactsuit.PlaybackHaptics(VHVRConfig.LeftHanded() ? "Recoil_L" : "Recoil_R", 2.0f);
+                BhapticsTactsuit.PlaybackHaptics(VRPlayer.isRightHandMainWeaponHand ? "Recoil_R" : "Recoil_L", 2.0f);
             }
         }
     }
@@ -192,17 +193,17 @@ namespace ValheimVRMod.Patches
         public static void Postfix(Humanoid __instance, bool __result)
         {
 
-            if (BhapticsTactsuit.suitDisabled || __instance != Player.m_localPlayer || EquipScript.getLeft() != EquipType.Shield || !VHVRConfig.UseVrControls())
+            if (BhapticsTactsuit.suitDisabled || __instance != Player.m_localPlayer || EquipScript.CurrentOffHandEquipType() != EquipType.Shield || !VHVRConfig.UseVrControls())
             {
                 return;
             }
             if (__result)
             {
-                BhapticsTactsuit.PlaybackHaptics(VHVRConfig.LeftHanded() ?
-                    "BlockVest_R" : "BlockVest_L");
+                BhapticsTactsuit.PlaybackHaptics(
+                    VRPlayer.isRightHandMainWeaponHand ? "BlockVest_L" : "BlockVest_R");
                 // arms tactosy
-                BhapticsTactsuit.PlaybackHaptics(VHVRConfig.LeftHanded() ?
-                    "Block_R" : "Block_L");
+                BhapticsTactsuit.PlaybackHaptics(
+                     VRPlayer.isRightHandMainWeaponHand ? "Block_L" : "Block_R");
             }
         }
     }
@@ -420,7 +421,7 @@ namespace ValheimVRMod.Patches
                         }
                     }
                     speedActive((speed == Sadle.Speed.NoChange) ? __instance.m_speed : speed,
-                        __instance.m_character.IsSwiming());
+                        __instance.m_character.IsSwimming());
 
                     //attacking
                     if (__instance.m_character.InAttack())
@@ -501,8 +502,8 @@ namespace ValheimVRMod.Patches
             Piece component = __instance.GetComponent<Piece>();
             if (__result && component != null && component == Player.m_localPlayer.GetHoveringPiece())
             {
-                BhapticsTactsuit.PlaybackHaptics((VHVRConfig.LeftHanded()) ? "Hammer_L" : "Hammer_R");
-                BhapticsTactsuit.PlaybackHaptics((VHVRConfig.LeftHanded()) ? "HammerTactosy_L" : "HammerTactosy_R");
+                BhapticsTactsuit.PlaybackHaptics(VRPlayer.isRightHandMainWeaponHand ? "Hammer_R" : "Hammer_L");
+                BhapticsTactsuit.PlaybackHaptics(VRPlayer.isRightHandMainWeaponHand ? "HammerTactosy_R" : "HammerTactosy_L");
             }
         }
     }
@@ -522,8 +523,8 @@ namespace ValheimVRMod.Patches
             Piece component = __instance.GetComponent<Piece>();
             if (component != null && component.IsCreator())
             {
-                BhapticsTactsuit.PlaybackHaptics((VHVRConfig.LeftHanded()) ? "Hammer_L" : "Hammer_R");
-                BhapticsTactsuit.PlaybackHaptics((VHVRConfig.LeftHanded()) ? "HammerTactosy_L" : "HammerTactosy_R");
+                BhapticsTactsuit.PlaybackHaptics(VRPlayer.isRightHandMainWeaponHand ? "Hammer_R" : "Hammer_L");
+                BhapticsTactsuit.PlaybackHaptics(VRPlayer.isRightHandMainWeaponHand ? "HammerTactosy_R" : "HammerTactosy_L");
             }
         }
     }
@@ -644,7 +645,7 @@ namespace ValheimVRMod.Patches
     /**
      * Boss animations / attacks
      */
-    [HarmonyPatch(typeof(Attack), "OnAttackTrigger")]
+    [HarmonyPatch(typeof(Attack), nameof(Attack.OnAttackTrigger))]
     class Attack_OnAttackTrigger_Patch
     {
         public static Dictionary<string, float> rangeBoss = new Dictionary<string, float>()

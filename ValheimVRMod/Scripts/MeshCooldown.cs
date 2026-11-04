@@ -1,76 +1,100 @@
 using UnityEngine;
+using ValheimVRMod.Utilities;
 
 namespace ValheimVRMod.Scripts {
     public class MeshCooldown : MonoBehaviour {
+        public bool showOutline = true;
+        protected virtual Color FullOutlineColor { get; } = Color.red;
+        private Color HiddenOutlineColor { get { return new Color(FullOutlineColor.r, FullOutlineColor.g, FullOutlineColor.b, 0); } }
+
+        private float cooldownStart;
         private float cooldown;
         private Outline outline;
 
-        public static MeshCooldown sharedInstance;
-        public static bool staminaDrained;
-        public static float damageMultiplier;
-        
-        public bool tryTrigger(float cd) {
+        public virtual bool tryTrigger(float cd) {
             if (inCoolDown()) {
                 return false;
             }
-
-            getOutline();
-            cooldown = cd;
-            if (sharedInstance == null) {
-                sharedInstance = this;
-                damageMultiplier = 1;
-            }
+            cooldown = cooldownStart = cd;
+            resetOutline();
             return true;
         }
 
-        public static float calcDamageMultiplier() {
-            var dmgMultiplier = damageMultiplier;
-            
-            if (damageMultiplier == 1) {
-                damageMultiplier /= 3;
+        private bool ensureOutline() {
+            if (outline == null) {
+                outline = gameObject.GetComponent<Outline>();
+                if (outline)
+                    Destroy(outline);
+                outline = gameObject.AddComponent<Outline>();
             }
-            else {
-                damageMultiplier /= 2;
-            }
-
-            return dmgMultiplier;
+            return outline != null;
+        }
+ 
+        // Whether the outline should be kept (as opposed to destroyed) after cooldown finishes.
+        protected virtual bool keepOutlineInstance()
+        {
+            return true;
         }
 
-        private void OnDisable() {
-            Destroy(this);
+        protected virtual void OnDisable() {
+            if (outline != null) {
+                outline.OutlineMode = Outline.Mode.OutlineHidden;
+            }
+        }
+
+        void OnDestroy() {
+            Destroy(outline);
         }
 
         public bool inCoolDown() {
             return cooldown > 0;
         }
 
-        private Outline getOutline() {
-            
-            if (outline != null) {
-                return outline;
-            }
+        public float getRemaningCooldownPercentage()
+        {
+            return cooldown > 0 ? cooldown / cooldownStart : 0;
+        }
 
-            outline = gameObject.AddComponent<Outline>();
-            outline.OutlineColor = Color.red;
-            outline.OutlineWidth = 10;
-            outline.OutlineMode = Outline.Mode.OutlineVisible;
-            
-            return outline;
+        private void resetOutline() {
+            if (ensureOutline())
+            {
+                outline.OutlineWidth = 10;
+                outline.OutlineColor = FullOutlineColor;
+                outline.OutlineMode = Outline.Mode.OutlineVisible;
+                outline.enabled = showOutline;
+            }
+        }
+
+        private static Color GetOutlineColor(Color fullColor, Color hiddenColor, float percentage)
+        {
+            return Color.Lerp(hiddenColor, fullColor, percentage > 0.5f ? 1 : percentage * 2);
         }
         
-        private void FixedUpdate() {
+        protected virtual void FixedUpdate() {
             if (! inCoolDown()) {
                 return;
             }
 
             cooldown -= Time.fixedDeltaTime;
-            
-            if (! inCoolDown()) {
-                Destroy(getOutline());
-                
-                if (sharedInstance == this) {
-                    staminaDrained = false;
-                    sharedInstance = null;
+
+            // TODO: find out why outline failed to be added.
+            if (outline == null)
+            {
+                return;
+            }
+
+            if (!showOutline)
+            {
+                outline.enabled = false;
+                return;
+            }
+
+            outline.OutlineColor = GetOutlineColor(FullOutlineColor, HiddenOutlineColor, Mathf.Max(cooldown, 0) / cooldownStart);
+            if (!inCoolDown()) {
+                outline.OutlineMode = Outline.Mode.OutlineHidden;
+                if (!keepOutlineInstance()) {
+                    Destroy(outline);
+                    outline = null;
                 }
             }
         }

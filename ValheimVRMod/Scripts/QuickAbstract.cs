@@ -1,125 +1,300 @@
+using ValheimVRMod.VRCore.Backends;
 using System;
+using System.Reflection;
+using HarmonyLib;
 using UnityEngine;
+using ValheimVRMod.Patches;
 using ValheimVRMod.Utilities;
+using ValheimVRMod.VRCore;
+using ValheimVRMod.VRCore.UI;
 
-namespace ValheimVRMod.Scripts {
-    public abstract class QuickAbstract : MonoBehaviour {
-        
+namespace ValheimVRMod.Scripts
+{
+    public abstract class QuickAbstract : MonoBehaviour
+    {
+
         private float elementDistance = 0.1f;
-        private const int MAX_ELEMENTS = 11;
+        protected const int MAX_ELEMENTS = 11;
+        protected const int MAX_EXTRA_ELEMENTS = 8;
 
         private Color standard = new Color(0.2f, 0.2f, 0.2f, 0.5f);
         private Color hovered = new Color(0.5f, 0.5f, 0.5f, 0.5f);
         private Color selected = new Color(0.34375f, 0.5859375f, 0.796875f, 0.5f);
 
+        protected Texture2D tex_standard;
+        protected Texture2D tex_hovered;
+        protected Texture2D tex_selected;
+
         protected GameObject hoveredItem;
+        private int elementCount;
+        private int extraElementCount;
         protected int hoveredIndex = -1;
-        protected GameObject[] elements;
-        
-        private GameObject sphere;
+        private int lastHoveredIndex = -1;
+        protected QuickMenuItem[] elements;
+        protected QuickMenuItem[] extraElements;
 
-        public Transform parent;
-        private Vector3 offset;
+        protected GameObject sphere;
 
-        private void Awake() {
-            
-            elements = new GameObject[MAX_ELEMENTS];
+        protected abstract Transform handTransform { get; }
+        private Transform quickMenuLocker;
+        protected GameObject wrist;
+        protected GameObject radialMenu;
+        private bool wasWrist;
+
+        protected MethodInfo stopEmote = AccessTools.Method(typeof(Player), "StopEmote");
+        protected bool hasGPower;
+        private Texture2D sitTexture;
+        private Texture2D mapTexture;
+        private Texture2D recenterTexture;
+        private Texture2D chatTexture;
+        public static bool shouldStartChat;
+        private static float? toggleMapHoldCountdown;
+
+        protected virtual void Awake()
+        {
+            sitTexture = VRAssetManager.GetAsset<Texture2D>("sit");
+            mapTexture = VRAssetManager.GetAsset<Texture2D>("map");
+            recenterTexture = VRAssetManager.GetAsset<Texture2D>("recenter");
+            chatTexture = VRAssetManager.GetAsset<Texture2D>("black_screen");
+            elements = new QuickMenuItem[MAX_ELEMENTS];
+            extraElements = new QuickMenuItem[MAX_EXTRA_ELEMENTS];
+            wrist = new GameObject();
+            radialMenu = new GameObject();
+            radialMenu.transform.SetParent(transform);
             initialize();
-            refreshItems();
             createSphere();
+            refreshItems();
         }
 
-        private void OnEnable() {
-            transform.SetParent(parent, false);
+        protected class QuickMenuItem : MonoBehaviour
+        {
+            public string itemName { get; private set; }
+            public delegate bool QuickMenuItemCallback();
+
+            private ItemDrop.ItemData item;
+
+            private QuickMenuItemCallback callback;
+            private Sprite sprite
+            {
+                set
+                {
+                    transform.GetChild(2).GetComponent<SpriteRenderer>().sprite = value;
+                    ResizeIcon();
+                }
+            }
+
+            public bool execute()
+            {
+                return callback == null ? false : callback();
+            }
+
+            public void useAsInventoryItemAndRefreshColor(Inventory inventory, ItemDrop.ItemData item)
+            {
+                if (this.item != item)
+                {
+                    this.item = item;
+                    itemName = item.GetIcon().name;
+                    sprite = item.GetIcon();
+                    callback = delegate ()
+                    {
+                        Player.m_localPlayer.UseItem(inventory, item, false);
+                        return true;
+                    };
+                }
+
+                transform.GetChild(1).gameObject.SetActive(item.m_equipped || item.m_durability == 0);
+                if (item.m_durability == 0)
+                {
+                    transform.GetChild(1).GetComponent<SpriteRenderer>().color = Color.red;
+                }
+                else
+                {
+                    transform.GetChild(1).GetComponent<SpriteRenderer>().color = Color.white;
+                }
+            }
+
+            public void useAsQuickAction(string itemName, Sprite sprite, QuickMenuItemCallback callback)
+            {
+                this.item = null;
+                this.itemName = itemName;
+                this.sprite = sprite;
+                this.callback = callback;
+            }
+
+            public void useAsNoOp()
+            {
+                this.item = null;
+                this.itemName = "NoOp";
+                this.sprite = null;
+                this.callback = null;
+            }
+
+            private void ResizeIcon()
+            {
+                Vector3 fSize;
+                var child = gameObject.transform.GetChild(2);
+                if (!child) return;
+                var sprite = child.GetComponent<SpriteRenderer>();
+                if (!sprite) return;
+                fSize = child.lossyScale;
+                sprite.drawMode = SpriteDrawMode.Sliced;
+                sprite.size = fSize * 9;
+            }
+        }
+
+        protected abstract void ExecuteHapticFeedbackOnHoverTo();
+
+        private void OnEnable()
+        {
+            transform.SetParent(handTransform, false);
             transform.localPosition = Vector3.zero;
+            Camera vrCam = CameraUtils.getCamera(CameraUtils.VR_CAMERA);
 
+            switch (VHVRConfig.getQuickMenuType())
+            {
+                case "Full Hand":
+                    transform.localRotation = Quaternion.Euler(VHVRConfig.getQuickMenuVerticalAngle() - 120, 0, 0);
+                    break;
 
-            
-            if (VHVRConfig.getQuickMenuFollowCam()) {
-                //Camera Version
-                Camera vrCam = CameraUtils.getCamera(CameraUtils.VR_CAMERA);
-                transform.LookAt(vrCam.transform.position);
+                case "Full Player":
+                    var facing = Vector3.ProjectOnPlane(vrCam.transform.forward, vrCam.transform.parent.up);
+                    transform.LookAt(transform.position + facing, vrCam.transform.parent.up);
+                    transform.localRotation *= Quaternion.Euler(VHVRConfig.getQuickMenuVerticalAngle() - 180, 0, 0);
+                    break;
+                case "Hand Follow Cam":
+                    //Camera Version
+                    transform.LookAt(vrCam.transform.position);
+                    break;
+                case "Hand-Player":
+                default:
+                    transform.localRotation = Quaternion.Euler(0, 0, 0);
+                    var tiltedFacing = Vector3.ProjectOnPlane(transform.forward, vrCam.transform.parent.up) - vrCam.transform.parent.up * 0.05f;
+                    transform.LookAt(transform.position + tiltedFacing, vrCam.transform.parent.up);
+                    transform.localRotation *= Quaternion.Euler(VHVRConfig.getQuickMenuVerticalAngle() - 180, 0, 0);
+                    break;
             }
-            else {
-                //Hand Version
-                transform.localRotation = Quaternion.Euler(VHVRConfig.getQuickMenuAngle(), 0, -5);
-            }
-            
 
             transform.SetParent(Player.m_localPlayer.transform);
             transform.parent = null;
-            offset = transform.position - Player.m_localPlayer.transform.position ;
+            wasWrist = false;
+            lastHoveredIndex = -1;
+            radialMenu.SetActive(false);
+            resetQuickMenuLocker();
         }
-        private void Update() {
-            transform.position = offset + Player.m_localPlayer.transform.position;
-            sphere.transform.position = parent.position;
+
+        // Records the current relative transform of the quick menu to the vr cam rig so that we can use it later to lock it relative to the vr cam rig.
+        private void resetQuickMenuLocker()
+        {
+            if (!quickMenuLocker)
+            {
+                quickMenuLocker = new GameObject().transform;
+            }
+            
+            quickMenuLocker.parent = GetVRCamRig();
+            quickMenuLocker.SetPositionAndRotation(transform.position, transform.rotation);
+        }
+
+        private void Update()
+        {
+            if (toggleMapHoldCountdown.HasValue)
+            {
+                toggleMapHoldCountdown -= Time.deltaTime;
+                if (toggleMapHoldCountdown <= 0)
+                {
+                    toggleMapHoldCountdown = null;
+                    GetButtonPatchUtils.Release("Map");
+                }
+            }
+
+            if (!quickMenuLocker)
+            {
+                resetQuickMenuLocker();
+            }
+
+            if (quickMenuLocker != null) {
+                // Lock the quick menu's position and rotation relative to the vr cam rig so it moves and rotates with the player.
+                transform.SetPositionAndRotation(quickMenuLocker.position, quickMenuLocker.rotation);
+            }
+
+            if (VHVRConfig.getQuickMenuType() == "Hand Follow Cam") {
+                Transform VRCamTransform = CameraUtils.getCamera(CameraUtils.VR_CAMERA).transform;
+                // Rotate the menu around its x-axis to have it facing the current height of the player.
+                transform.LookAt(Vector3.ProjectOnPlane(VRCamTransform.position - transform.position, transform.right) + transform.position);
+            }
+
+            if (sphere)
+            {
+                sphere.transform.position = handTransform.position;
+            }
             hoverItem();
         }
 
-        protected abstract int getElementCount();
+        private void OnDestroy()
+        {
+            Destroy(wrist);
+            Destroy(quickMenuLocker);
+            Destroy(radialMenu);
+            foreach (QuickMenuItem item in elements)
+            {
+                Destroy(item);
+            }
+            foreach (QuickMenuItem item in extraElements)
+            {
+                Destroy(item);
+            }
+        }
+        public abstract void UpdateWristBar();
         public abstract void refreshItems();
-        public abstract void selectHoveredItem();
 
-        private void createSphere() {
+        private void createSphere()
+        {
             sphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             sphere.transform.SetParent(transform);
             sphere.transform.localScale *= 0.02f;
             sphere.layer = LayerUtils.getWorldspaceUiLayer();
+            sphere.GetComponent<MeshRenderer>().material = Instantiate(VRAssetManager.GetAsset<Material>("Unlit"));
             sphere.GetComponent<MeshRenderer>().material.color = Color.red;
             Destroy(sphere.GetComponent<Collider>());
         }
-        
+
         /**
-         * create:
-         * - standart layer (gray)
+         * Creates:
+         * - standard layer (gray)
          * - disabled equipped layers (blue)
          * - items, without sprite yet
          */
-        private void initialize() {
-            
-            var tex_standard = new Texture2D(1, 1);
-            tex_standard.SetPixel(0,0, standard);
+        private void initialize()
+        {
+
+            tex_standard = new Texture2D(1, 1);
+            tex_standard.SetPixel(0, 0, standard);
             tex_standard.Apply();
-        
-            var tex_hovered = new Texture2D(1, 1);
-            tex_hovered.SetPixel(0,0, hovered);
+
+            tex_hovered = new Texture2D(1, 1);
+            tex_hovered.SetPixel(0, 0, hovered);
             tex_hovered.Apply();
-        
-            var tex_selected = new Texture2D(1, 1);
-            tex_selected.SetPixel(0,0, selected);
+
+            tex_selected = new Texture2D(1, 1);
+            tex_selected.SetPixel(0, 0, selected);
             tex_selected.Apply();
 
-            for (int i = 0; i < MAX_ELEMENTS; i++) {
+            for (int i = 0; i < MAX_ELEMENTS; i++)
+            {
 
-                elements[i] = new GameObject();
-                elements[i].transform.SetParent(transform, false);
-                
-                GameObject standardLayer = new GameObject();
-                standardLayer.layer = LayerUtils.getWorldspaceUiLayer();
-                standardLayer.transform.SetParent(elements[i].transform, false);
-                standardLayer.transform.localScale *= 4;
-                var standardRenderer = standardLayer.AddComponent<SpriteRenderer>();
-                standardRenderer.sprite = Sprite.Create(tex_standard, new Rect(0.0f, 0.0f, tex_standard.width, tex_standard.height), new Vector2(0.5f, 0.5f));
-                standardRenderer.sortingOrder = 0;
+                elements[i] = new GameObject().AddComponent<QuickMenuItem>();
+                elements[i].transform.SetParent(radialMenu.transform, false);
 
-                GameObject equipedLayer = new GameObject();
-                equipedLayer.layer = LayerUtils.getWorldspaceUiLayer();
-                equipedLayer.transform.SetParent(elements[i].transform, false);
-                equipedLayer.transform.localScale *= 4;
-                var equipedRenderer = equipedLayer.AddComponent<SpriteRenderer>();
-                equipedRenderer.sprite = Sprite.Create(tex_selected, new Rect(0.0f, 0.0f, tex_selected.width, tex_selected.height), new Vector2(0.5f, 0.5f));
-                equipedRenderer.sortingOrder = 2;
-                equipedLayer.SetActive(false);
-
-                GameObject item = new GameObject();
-                item.layer = LayerUtils.getWorldspaceUiLayer();
-                item.transform.SetParent(elements[i].transform, false);
-                item.transform.localScale /= 15;
-                var renderer = item.AddComponent<SpriteRenderer>();
-                renderer.sortingOrder = 3;
-
+                CreateItemLayers(elements[i].gameObject);
             }
-            
+
+            for (int i = 0; i < MAX_EXTRA_ELEMENTS; i++)
+            {
+                extraElements[i] = new GameObject().AddComponent<QuickMenuItem>();
+                extraElements[i].transform.SetParent(wrist.transform, false);
+
+                CreateItemLayers(extraElements[i].gameObject);
+            }
+
             hoveredItem = new GameObject();
             hoveredItem.layer = LayerUtils.getWorldspaceUiLayer();
             hoveredItem.transform.SetParent(transform, false);
@@ -128,46 +303,460 @@ namespace ValheimVRMod.Scripts {
             hoveredItemRenderer.sprite = Sprite.Create(tex_hovered, new Rect(0.0f, 0.0f, tex_hovered.width, tex_hovered.height), new Vector2(0.5f, 0.5f));
             hoveredItemRenderer.sortingOrder = 1;
             hoveredItem.SetActive(false);
-            
+            quickMenuLocker = new GameObject().transform;
         }
 
-        protected void reorderElements() {
-            
-            for (int i = 0; i < MAX_ELEMENTS; i++) {
+        protected void reorderElements()
+        {
 
-                if (i >= getElementCount()) {
-                    elements[i].SetActive(false);
+            for (int i = 0; i < MAX_ELEMENTS; i++)
+            {
+
+                if (i >= elementCount)
+                {
+                    elements[i].gameObject.SetActive(false);
                     continue;
                 }
-                
-                double a = i * 2 * Math.PI / getElementCount();
+
+                double a = (360 / elementCount * Mathf.Deg2Rad * i) + 90 * Mathf.Deg2Rad;
                 double x = Math.Cos(a) * elementDistance;
                 double y = Math.Sin(a) * elementDistance;
-                var position = new Vector2((float)x, (float)y);
-                
-                elements[i].SetActive(true);
+                var position = new Vector2((float)-x, (float)y);
+
+                elements[i].gameObject.SetActive(true);
                 elements[i].transform.localPosition = position;
             }
+
+            if (!Player.m_localPlayer)
+            {
+                return;
+            }
+
+            for (int i = 0; i < MAX_EXTRA_ELEMENTS; i++)
+            {
+                if (i >= extraElementCount)
+                {
+                    extraElements[i].gameObject.SetActive(false);
+                    continue;
+                }
+                var center = Mathf.Min(extraElementCount, 4);
+                var row = 0f;
+                var column = i;
+                if (i >= 4)
+                {
+                    row = -0.05f;
+                    center = extraElementCount - 4;
+                    column = i - 4;
+                }
+                var extraOffset = (column * 0.05f) - (center / 2 * 0.05f) + (center % 2 == 0 ? 0.025f : 0);
+                var position = new Vector2((float)extraOffset, row);
+                extraElements[i].gameObject.SetActive(true);
+                extraElements[i].transform.localPosition = position;
+            }
         }
-        private void hoverItem() {
+
+        private void hoverItem()
+        {
 
             float maxDist = 0.05f;
+            Vector3 hoverPos = Vector3.zero;
+            Quaternion hoverRot = Quaternion.identity;
             hoveredIndex = -1;
-            
-            for (int i = 0; i < getElementCount(); i++) {
-                var dist = Vector3.Distance(parent.position, elements[i].transform.position);
 
-                if (dist < maxDist) {
+            var projectedPos = Vector3.Project(handTransform.position - transform.position, transform.forward);
+            transform.position += projectedPos;
+            sphere.transform.position -= projectedPos;
+
+            //extraItems
+            for (int i = 0; i < extraElementCount; i++)
+            {
+                var dist = Vector3.Distance(handTransform.position, extraElements[i].transform.position);
+
+                if (dist < maxDist)
+                {
                     maxDist = dist;
-                    hoveredIndex = i;
+                    hoveredIndex = i + elementCount;
+                    hoverPos = extraElements[i].transform.position;
+                    hoverRot = extraElements[i].transform.rotation;
+                }
+            }
+            if (IsInArea())
+            {
+                wasWrist = true;
+            }
+
+            //radial menu mode
+            if (wasWrist)
+            {
+                radialMenu.gameObject.SetActive(false);
+            }
+            else if (hoveredIndex == -1 && elementCount != 0)
+            {
+                radialMenu.gameObject.SetActive(true);
+                var convertedPos = transform.InverseTransformPoint(handTransform.position);
+                convertedPos = new Vector3(convertedPos.x, convertedPos.y, 0);
+                //var currentangle = Vector3.SignedAngle(transform.up, parent.position - transform.position, -transform.forward);
+                var currentangle = Vector3.SignedAngle(Vector3.up, convertedPos.normalized, -Vector3.forward);
+                var distFromCenter = Vector3.Distance(transform.position, handTransform.position);
+                if (distFromCenter > 0.07f)
+                {
+                    var elementAngle = 360 / elementCount;
+                    var wrappedAngle = currentangle + elementAngle / 2f;
+                    wrappedAngle = (wrappedAngle + 360f) % 360f;
+                    hoveredIndex = (int)(wrappedAngle / elementAngle);
+                    if (hoveredIndex >= elementCount) hoveredIndex = 0;
+                    hoverPos = elements[hoveredIndex].transform.position;
+                    hoverRot = elements[hoveredIndex].transform.rotation;
                 }
             }
 
-            var hovering = hoveredIndex >= 0;
-            if (hovering) {
-                hoveredItem.transform.position = elements[hoveredIndex].transform.position;    
+            var hovering = false;
+
+            if (hoveredIndex >= 0 && hoveredIndex < elements.Length + extraElements.Length - 2)
+            {
+                if (lastHoveredIndex != hoveredIndex)
+                {
+                    ExecuteHapticFeedbackOnHoverTo();
+                }
+                hoveredItem.transform.position = hoverPos;
+                hoveredItem.transform.rotation = hoverRot;
+                hovering = true;
+                lastHoveredIndex = hoveredIndex;
             }
+            else
+            {
+                lastHoveredIndex = -1;
+            }
+
             hoveredItem.SetActive(hovering);
+
+        }
+
+        protected void CreateItemLayers(GameObject currentParent)
+        {
+            GameObject standardLayer = new GameObject();
+            standardLayer.layer = LayerUtils.getWorldspaceUiLayer();
+            standardLayer.transform.SetParent(currentParent.transform, false);
+            standardLayer.transform.localScale *= 4;
+            var standardRenderer = standardLayer.AddComponent<SpriteRenderer>();
+            standardRenderer.sprite = Sprite.Create(tex_standard, new Rect(0.0f, 0.0f, tex_standard.width, tex_standard.height), new Vector2(0.5f, 0.5f));
+            standardRenderer.sortingOrder = 0;
+
+            GameObject equipedLayer = new GameObject();
+            equipedLayer.layer = LayerUtils.getWorldspaceUiLayer();
+            equipedLayer.transform.SetParent(currentParent.transform, false);
+            equipedLayer.transform.localScale *= 4;
+            var equipedRenderer = equipedLayer.AddComponent<SpriteRenderer>();
+            equipedRenderer.sprite = Sprite.Create(tex_selected, new Rect(0.0f, 0.0f, tex_selected.width, tex_selected.height), new Vector2(0.5f, 0.5f));
+            equipedRenderer.sortingOrder = 2;
+            equipedLayer.SetActive(false);
+
+            GameObject item = new GameObject();
+            item.layer = LayerUtils.getWorldspaceUiLayer();
+            item.transform.SetParent(currentParent.transform, false);
+            item.transform.localScale /= 15;
+            var renderer = item.AddComponent<SpriteRenderer>();
+            renderer.sortingOrder = 3;
+        }
+
+        private static Transform GetVRCamRig()
+        {
+            return CameraUtils.getCamera(CameraUtils.VR_CAMERA).transform.parent;
+        }
+
+        protected bool IsInArea()
+        {
+            var wristBasedPos = wrist.transform.InverseTransformPoint(handTransform.position);
+            if (wristBasedPos.y > -0.07f && wristBasedPos.y < 0.07f &&
+                wristBasedPos.z > -0.07f && wristBasedPos.z < 0.07f &&
+                wristBasedPos.x > -0.15f && wristBasedPos.x < 0.15f)
+                return true;
+            return false;
+        }
+
+        protected bool isInView()
+        {
+            Camera vrCam = CameraUtils.getCamera(CameraUtils.VR_CAMERA);
+            var deltaAngle = Vector3.Angle(vrCam.transform.forward, wrist.transform.forward);
+            if (deltaAngle > 70f && !SettingCallback.configRunning)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        protected void refreshRadialItems(bool isDominantHand)
+        {
+            if (Player.m_localPlayer == null)
+            {
+                return;
+            }
+
+            elementCount = 0;
+            var inventory = Player.m_localPlayer?.GetInventory();
+            if (inventory == null)
+            {
+                return;
+            }
+
+            if (VHVRConfig.SplitQuickMenuRadialItemsBySlot())
+            {
+                var isRightHand = VHVRConfig.LeftHanded() ^ isDominantHand;
+                var startIndex = isRightHand ? 4 : 0;
+                elementCount = 4;
+                for (var i = 0; i < elementCount; i++)
+                {
+                    ItemDrop.ItemData item = inventory?.GetItemAt(startIndex + i, 0);
+                    if (item == null)
+                    {
+                        elements[i].useAsNoOp();
+                    }
+                    else
+                    {
+                        elements[i].useAsInventoryItemAndRefreshColor(inventory, item);
+                    }
+                }
+            } else {
+                for (int i = 0; i < 8; i++)
+                {
+                    ItemDrop.ItemData item = inventory?.GetItemAt(i, 0);
+                    if (item == null)
+                    {
+                        continue;
+                    }
+                    if (VHVRConfig.SplitQuickMenuRadialItemsByWieldingHand() && EquipScript.CanUseAsMainHandItem(item) ^ isDominantHand) {
+                        continue;
+                    }
+                    elements[elementCount].useAsInventoryItemAndRefreshColor(inventory, item);
+                    elementCount++;
+                }
+            }
+        }
+
+        protected void RefreshWristQuickAction()
+        {
+            if (Player.m_localPlayer == null)
+            {
+                return;
+            }
+
+            extraElementCount = 0;
+            // This wrist bar holds items now, the Forsaken Power button is on the other one if anywhere.
+            GuardianPowerCountdown.DetachFrom(wrist.transform);
+            WristStatusEffects.DetachFrom(wrist);
+
+            Inventory inventory = Player.m_localPlayer?.GetInventory();
+            if (inventory == null)
+            {
+                return;
+            }
+            for (int i = 0; i < VHVRConfig.QuickBarQuantity(); i++)
+            {
+
+                ItemDrop.ItemData item = inventory?.GetItemAt(i + (8- VHVRConfig.QuickBarQuantity()), 1);
+
+                if (item == null)
+                {
+                    continue;
+                }
+
+                if (item.GetIcon().name != extraElements[extraElementCount].itemName)
+                {
+                    extraElements[extraElementCount].useAsInventoryItemAndRefreshColor(inventory, item);
+                }
+                extraElementCount++;
+            }
+        }
+
+        protected void RefreshWristQuickSwitch()
+        {
+            if (!Player.m_localPlayer)
+            {
+                return;
+            }
+            StatusEffect se;
+            float cooldown;
+            extraElementCount = 0;
+            Player.m_localPlayer.GetGuardianPowerHUD(out se, out cooldown);
+            if (se)
+            {
+                hasGPower = true;
+                if (extraElements[extraElementCount].itemName != ("QuickActionPOWER_" + se.name))
+                {
+                    extraElements[extraElementCount].useAsQuickAction(
+                        "QuickActionPOWER_" + se.name,
+                        se.m_icon,
+                        delegate ()
+                        {
+                            if (!hasGPower)
+                            {
+                                return false;
+                            }
+                            Player.m_localPlayer.StartGuardianPower();
+                            return true;
+                        });
+                }
+                if (VRHud.UsesLegacyHud())
+                {
+                    // The countdown belongs on the legacy HUD along with everything else.
+                    GuardianPowerCountdown.DetachFrom(wrist.transform);
+                }
+                else
+                {
+                    GuardianPowerCountdown.AttachTo(extraElements[extraElementCount].transform);
+                }
+                extraElementCount++;
+            }
+            else
+            {
+                GuardianPowerCountdown.DetachFrom(wrist.transform);
+            }
+
+            if (extraElements[extraElementCount].itemName != "QuickActionSIT")
+            {
+                extraElements[extraElementCount].useAsQuickAction(
+                    "QuickActionSIT",
+                    Sprite.Create(sitTexture, new Rect(0.0f, 0.0f, sitTexture.width, sitTexture.height), new Vector2(0.5f, 0.5f), 500),
+                    delegate ()
+                    {
+                        if (Player.m_localPlayer.InEmote() && Player.m_localPlayer.IsSitting())
+                            stopEmote.Invoke(Player.m_localPlayer, null);
+                        else
+                            VRPlayer.StartSit();
+                        return true;
+                    });
+            }
+            extraElementCount++;
+
+            if (extraElements[extraElementCount].itemName != "QuickActionMAP")
+            {
+                extraElements[extraElementCount].useAsQuickAction(
+                    "QuickActionMAP",
+                    Sprite.Create(mapTexture, new Rect(0.0f, 0.0f, mapTexture.width, mapTexture.height), new Vector2(0.5f, 0.5f), 500),
+                    delegate ()
+                    {
+                        GetButtonPatchUtils.Press("Map");
+                        toggleMapHoldCountdown = 0.25f;
+                        return true;
+                    });
+            }
+            extraElementCount++;
+
+            if (extraElements[extraElementCount].itemName != "QuickActionRECENTER")
+            {
+                extraElements[extraElementCount].useAsQuickAction(
+                    "QuickActionRECENTER",
+                    Sprite.Create(recenterTexture, new Rect(0.0f, 0.0f, recenterTexture.width, recenterTexture.height), new Vector2(0.5f, 0.5f), 500),
+                    delegate ()
+                    {
+                        VRManager.tryRecenter();
+                        return true;
+                    });
+            }
+            extraElementCount++;
+
+            if (extraElements[extraElementCount].itemName != "QuickActionCHAT")
+            {
+                extraElements[extraElementCount].useAsQuickAction(
+                    "QuickActionCHAT",
+                    Sprite.Create(chatTexture, new Rect(0.0f, 0.0f, chatTexture.width, chatTexture.height), new Vector2(0.5f, 0.5f), 500),
+                    delegate ()
+                    {
+                        ToggleChat();
+                        return true;
+                    });
+            }
+            extraElementCount++;
+
+            if (VHVRConfig.StatusEffectsOnWristQuickBar() && !VRHud.UsesLegacyHud())
+            {
+                // One row above the first row of buttons, see reorderElements().
+                WristStatusEffects.AttachTo(wrist, 0.05f);
+            }
+            else
+            {
+                WristStatusEffects.DetachFrom(wrist);
+            }
+        }
+
+        private static void ToggleChat()
+        {
+            if (Chat.instance == null)
+            {
+                return;
+            }
+
+            if (InputManager.keyboardActive && !InputManager.chatKeyboardActive)
+            {
+                // The SteamVR keyboard is typing into some other dialog.
+                return;
+            }
+
+            if (shouldStartChat && Chat.instance.HasFocus() && !InputManager.chatKeyboardActive)
+            {
+                // Physical keyboard chat: a repeat press is the "confirm" gesture.
+                enterChatText();
+                return;
+            }
+
+            if (InputManager.chatActive)
+            {
+                // This also covers either of the two being open without the other. The SteamVR keyboard
+                // sends the text with its own done key.
+                InputManager.CancelChat();
+                return;
+            }
+
+            if (!CanOpenChat())
+            {
+                return;
+            }
+
+            shouldStartChat = true;
+            // Holding Use opens the chat for a physical keyboard, without the SteamVR one.
+            InputManager.OpenChat(useSteamVrKeyboard: !VRInputActions.valheim_Use.GetState(VRInputSource.Any));
+        }
+
+        // What Chat.Update() requires before it opens the chat.
+        private static bool CanOpenChat()
+        {
+            return Player.m_localPlayer != null &&
+                !global::Console.IsVisible() &&
+                !TextInput.IsVisible() &&
+                !Minimap.InTextInput() &&
+                !Menu.IsVisible() &&
+                !InventoryGui.IsVisible() &&
+                !Hud.IsPieceSelectionVisible();
+        }
+
+        public static void enterChatText()
+        {
+            Chat.instance.InputText();
+            unfocusChatWindow();
+        }
+
+        public static void unfocusChatWindow()
+        {
+            InputManager.CancelChat();
+        }
+
+
+        public bool selectHoveredItem()
+        {
+            if (hoveredIndex < 0)
+            {
+                return false;
+            }
+            else if (hoveredIndex < elementCount)
+            {
+                return elements[hoveredIndex].execute();
+            }
+            else if (hoveredIndex < elementCount + extraElementCount)
+            {
+                return extraElements[hoveredIndex - elementCount].execute();
+            }
+            return false;
         }
     }
 }

@@ -1,5 +1,47 @@
 # Setting up a development environment
 
+Build VHVR's Unity assets and plugin by following the
+[environment setup](#setting-up-the-environment) and [mod build](#build-the-mod)
+steps below.
+
+## Run automated checks
+
+Install Git, Python 3 (available as `python`), and .NET SDK 8 or newer with the
+.NET 8 runtime. Use an owned Valheim installation with BepInEx and the managed
+VHVR reference libraries, including FinalIK, OpenVR XR and bHaptics, available in
+`Valheim_Data\Managed`. Keep the tracked `Unity/ValheimVR/Assets/SteamVR` sources
+and `Unity/ValheimVR/Assets/StreamingAssets/SteamVR` in the checkout, including when
+using a sparse checkout.
+
+From the repository root, run this in PowerShell with your Valheim path:
+
+```powershell
+./scripts/Test-BackendRefactor.ps1 -ValheimDir 'C:\Program Files (x86)\Steam\steamapps\common\Valheim'
+```
+
+The projects in `tests/BackendRefactor` are the build harness and automated test
+suite. The command builds the gameplay and bundled SteamVR SDK, creates the
+SteamVR actions from the action catalog, then checks provider boundaries, the
+catalog against `actions.json`, managed input snapshots, callbacks and haptic
+action identity. It uses a .NET Framework 4.7.2 diagnostic
+build; the production plugin's .NET Framework 4.6 build remains described below.
+Outputs stay in ignored `bin`/`obj` directories; nothing is deployed to the game
+or included in release packaging. Tracking, rendering and hardware haptics need
+separate testing in SteamVR.
+
+### Adding an input action
+
+Input actions are listed once, in `ValheimVRMod/VRCore/Backends/VRInputActions.cs`,
+and the SteamVR backend creates them from that list at startup. Adding one takes:
+
+1. an entry in `VRInputActions.Actions` (and a property, if the mod reads it);
+2. the same action in `Unity/ValheimVR/Assets/StreamingAssets/SteamVR/actions.json`
+   (type, requirement, English name) and in the default bindings that should bind it.
+
+No Unity rebuild is needed: the generated `SteamVR_Actions.dll` is no longer used.
+The mod logs an error at startup for any difference between the list and
+`actions.json`, and the test suite above fails on one.
+
 ## Who is this for?
 
 ## Software you will need
@@ -32,10 +74,9 @@
 2. Navigate to wherever you checked the source out above, and choose the `Unity\ValheimVR` folder.
 3. Click the newly added project to open it in Unity.
 4. Go to File -> Build Settings, then click Build.
-5. Navigate to the `vhvr-mod\Unity` folder inside your mod checkout.
-6. Create a new subdirectory there named `build` and navigate into it.
-7. Select that folder for the build. The Unity project's build output should appear in `vhvr-mod\Unity\build`.
-8. Close Unity.
+5. Navigate to the `vhvr-mod\Unity\build` folder inside your mod checkout.
+6. Select the folder for the build. The Unity project's build output should appear in `vhvr-mod\Unity\build`.
+7. Close Unity.
 
 ## Build the mod
 1. Open Visual Studio, and choose "Open a project or solution"
