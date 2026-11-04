@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-using ValheimVRMod.Utilities;
 
 namespace ValheimVRMod.VRCore.Backends
 {
