@@ -1,4 +1,6 @@
 using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.LowLevel;
 using static ValheimVRMod.Utilities.LogUtils;
 
 namespace ValheimVRMod.VRCore.Backends
@@ -6,7 +8,9 @@ namespace ValheimVRMod.VRCore.Backends
     // A hand of the OpenXR rig, standing in for SteamVR's Hand and SteamVR_Behaviour_Pose on the prefab's hand
     // objects: it puts the hand at the controller's SteamVR raw pose (the default Pose action), in the space of its
     // parent, which is the tracking space as the head's. It moves the hand in Update() and again before rendering,
-    // as SteamVR_Behaviour_Pose does. No controller or hand model is drawn.
+    // as SteamVR_Behaviour_Pose does: right after the Input System's before render update, which brings the pose up
+    // to date, and on Application.onBeforeRender should there be no such update. No controller or hand model is
+    // drawn.
     [DefaultExecutionOrder(-29000)]
     public sealed class OpenXRHand : MonoBehaviour
     {
@@ -28,11 +32,21 @@ namespace ValheimVRMod.VRCore.Backends
         private void OnEnable()
         {
             Application.onBeforeRender += updatePose;
+            InputSystem.onAfterUpdate += onInputUpdated;
         }
 
         private void OnDisable()
         {
             Application.onBeforeRender -= updatePose;
+            InputSystem.onAfterUpdate -= onInputUpdated;
+        }
+
+        private void onInputUpdated()
+        {
+            if (InputState.currentUpdateType == InputUpdateType.BeforeRender)
+            {
+                updatePose();
+            }
         }
 
         private void Update()

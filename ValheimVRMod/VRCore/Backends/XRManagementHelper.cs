@@ -60,19 +60,26 @@ namespace ValheimVRMod.VRCore.Backends
             return false;
         }
 
-        public static void Recenter()
+        // recenterTracking: also recenter the tracking space through the XR input subsystems. Under OpenXR the
+        // plugin's TryRecenter makes its own space from the headset's pose of the moment, so OpenXRBackend only asks
+        // for it with the headset worn upright: one taken with the headset e.g. lying on a desk when the game starts
+        // could leave the world upside down until the runtime recentered.
+        public static void Recenter(bool recenterTracking = true)
         {
             if (VRPlayer.ShouldPauseMovement)
             {
                 return;
             }
 
-            List<XRInputSubsystem> inputSubsystems = new List<XRInputSubsystem>();
-            SubsystemManager.GetInstances(inputSubsystems);
-            foreach (var subsystem in inputSubsystems)
+            if (recenterTracking)
             {
-                LogDebug("Recentering Input Subsystem: " + subsystem);
-                subsystem.TryRecenter();
+                List<XRInputSubsystem> inputSubsystems = new List<XRInputSubsystem>();
+                SubsystemManager.GetInstances(inputSubsystems);
+                foreach (var subsystem in inputSubsystems)
+                {
+                    LogDebug("Recentering Input Subsystem: " + subsystem);
+                    subsystem.TryRecenter();
+                }
             }
 
             // Trigger recentering head position on player body

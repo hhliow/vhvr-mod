@@ -126,6 +126,12 @@
       <HintPath>..\Unity\OpenXR\Managed\Unity.XR.OpenXR.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <!-- The mod's own OpenXR feature (VHVR's OpenXR actions), built before the mod by BuildVHVROpenXR. Only used by
+         the OpenXR backend (VRCore\Backends\OpenXRLoaderSetup.cs). -->
+    <Reference Include="VHVR.OpenXR">
+      <HintPath>..\VHVR.OpenXR\bin\$(Configuration)\VHVR.OpenXR.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="UnityEngine.SpatialTracking">
       <HintPath>..\Unity\build\ValheimVR_Data\Managed\UnityEngine.SpatialTracking.dll</HintPath>
     </Reference>
@@ -151,6 +157,9 @@
       <HintPath>..\Unity\build\ValheimVR_Data\Managed\Valve.Newtonsoft.Json.dll</HintPath>
     </Reference>
   </ItemGroup>
+  <Target Name="BuildVHVROpenXR" BeforeTargets="ResolveAssemblyReferences">
+    <MSBuild Projects="..\VHVR.OpenXR\VHVR.OpenXR.csproj" Targets="Build" Properties="Configuration=$(Configuration);CommonDir=$(CommonDir)" />
+  </Target>
   <Target Name="PostBuild" AfterTargets="PostBuildEvent" Condition="'$(SkipReleasePackaging)' != 'true'">
     <Exec Command="make-release.cmd" EnvironmentVariables="
 	    SOLUTION_DIR=$(SolutionDir);

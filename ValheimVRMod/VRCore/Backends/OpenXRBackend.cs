@@ -39,11 +39,12 @@ namespace ValheimVRMod.VRCore.Backends
             XRManagerSettings manager;
             try
             {
+                OpenXRLoaderSetup.ConfigureActions(input.BuildManifest());
                 manager = OpenXRLoaderSetup.CreateManager();
             }
             catch (Exception e) when (e is FileNotFoundException || e is TypeLoadException)
             {
-                LogError("The OpenXR plugin (Unity.XR.OpenXR.dll in valheim_Data\\Managed) could not be loaded: " + e.Message);
+                LogError("The OpenXR plugin (Unity.XR.OpenXR.dll and VHVR.OpenXR.dll in valheim_Data\\Managed) could not be loaded: " + e.Message);
                 return false;
             }
             if (manager == null || !XRManagementHelper.InitializeLoaders(manager))
@@ -65,8 +66,66 @@ namespace ValheimVRMod.VRCore.Backends
                 return false;
             }
             useFloorOrigin();
+            followRuntimeRecentering();
             input.Start();
             return true;
+        }
+
+        // The runtime recenters on its own, e.g. on the Quest's recenter: the XR input subsystem then reports that
+        // its tracking origin changed, and the menu and the head on the body are recentered with it.
+        private void followRuntimeRecentering()
+        {
+            var inputs = new List<XRInputSubsystem>();
+            SubsystemManager.GetInstances(inputs);
+            foreach (XRInputSubsystem subsystem in inputs)
+            {
+                subsystem.trackingOriginUpdated -= onTrackingOriginUpdated;
+                subsystem.trackingOriginUpdated += onTrackingOriginUpdated;
+            }
+            Application.onBeforeRender -= maybeRecenterTracking;
+            Application.onBeforeRender += maybeRecenterTracking;
+        }
+
+        private static void onTrackingOriginUpdated(XRInputSubsystem subsystem)
+        {
+            LogInfo("OpenXR tracking origin updated; recentering the menu and the head.");
+            UI.VRGUI.triggerGuiRecenter();
+            VRPlayer.RequestRecentering();
+        }
+
+        // A recenter of the tracking space waiting for the headset to be worn upright (see tryRecenter()).
+        private static bool trackingRecenterPending;
+
+        private static void maybeRecenterTracking()
+        {
+            if (!trackingRecenterPending || VRPlayer.ShouldPauseMovement || !isHeadsetUpright())
+            {
+                return;
+            }
+            trackingRecenterPending = false;
+            LogInfo("OpenXR: the headset is worn upright; recentering the tracking space.");
+            XRManagementHelper.Recenter();
+            UI.VRGUI.triggerGuiRecenter();
+        }
+
+        // Whether the headset is tracked, worn (where the runtime tells) and level enough for its pose to be a center:
+        // the plugin's recenter makes its tracking space from the headset's pose of the moment, so one taken with the
+        // headset lying on a desk, e.g. when the game starts, would leave the world tilted or upside down.
+        private static bool isHeadsetUpright()
+        {
+            UnityEngine.XR.InputDevice head = InputDevices.GetDeviceAtXRNode(XRNode.Head);
+            if (!head.isValid ||
+                !head.TryGetFeatureValue(UnityEngine.XR.CommonUsages.isTracked, out bool tracked) || !tracked ||
+                !head.TryGetFeatureValue(UnityEngine.XR.CommonUsages.deviceRotation, out Quaternion rotation))
+            {
+                return false;
+            }
+            if (head.TryGetFeatureValue(UnityEngine.XR.CommonUsages.userPresence, out bool present) && !present)
+            {
+                return false;
+            }
+            // Within 45 degrees of level.
+            return Vector3.Dot(rotation * Vector3.up, Vector3.up) > 0.7f;
         }
 
         // A standing (floor level) origin, as SteamVR gives the OpenVR loader, rather than OpenXR's default of the
@@ -175,6 +234,17 @@ namespace ValheimVRMod.VRCore.Backends
             }
         }
 
-        public void tryRecenter() => XRManagementHelper.Recenter();
+        // The tracking space too, but only from a headset worn upright: otherwise the head and body now, and the
+        // tracking space once the headset is (maybeRecenterTracking).
+        public void tryRecenter()
+        {
+            bool upright = isHeadsetUpright();
+            XRManagementHelper.Recenter(recenterTracking: upright);
+            if (!upright)
+            {
+                LogInfo("OpenXR: the headset is not worn upright; recentering the tracking space once it is.");
+                trackingRecenterPending = true;
+            }
+        }
     }
 }

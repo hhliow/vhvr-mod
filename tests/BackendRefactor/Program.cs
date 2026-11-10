@@ -46,6 +46,7 @@ static class Program
         CheckCallbacks();
         CheckBoundary();
         CheckHapticIdentity();
+        CheckOpenXRManifest();
         CheckRuntimeSelection();
         Console.WriteLine($"PASS: {checks} differential and contract assertions against the action catalog and original managed SteamVR SDK.");
         Console.WriteLine("Published input snapshots are simulated. Native polling, rig timing, rendering, haptics and headset acceptance remain separate gates.");
@@ -301,7 +302,8 @@ static class Program
                 if (type.IsGenericType && type.GetGenericArguments().Any(IsOpenXR)) return true;
                 type = type.HasElementType ? type.GetElementType() : type.GetGenericTypeDefinition();
             }
-            return type?.Assembly.GetName().Name == "Unity.XR.OpenXR";
+            string? assembly = type?.Assembly.GetName().Name;
+            return assembly == "Unity.XR.OpenXR" || assembly == "VHVR.OpenXR";
         }
         const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
         foreach (var type in mod.GetTypes())
@@ -324,6 +326,100 @@ static class Program
                 Require(false, "no OpenXR type in the members of " + type.FullName);
             }
         }
+    }
+
+    // The OpenXR inputs of each interaction profile the manifest suggests bindings on (OpenXR 1.0 spec, 6.4, and the
+    // profiles' extensions), per hand. A binding to any other path makes the runtime refuse all of VHVR's bindings for
+    // that profile.
+    static readonly Dictionary<string, (string[] Left, string[] Right)> OpenXRInputs = BuildOpenXRInputs();
+    static Dictionary<string, (string[] Left, string[] Right)> BuildOpenXRInputs()
+    {
+        string[] stick(string name) => new[] { name, name + "/x", name + "/y", name + "/click", name + "/touch" };
+        string[] both(params string[][] parts) => parts.SelectMany(part => part).ToArray();
+        var touchBoth = both(new[] { "squeeze/value", "trigger/value", "trigger/touch", "thumbrest/touch" }, stick("thumbstick"));
+        var touch = (both(touchBoth, new[] { "x/click", "x/touch", "y/click", "y/touch", "menu/click" }),
+                     both(touchBoth, new[] { "a/click", "a/touch", "b/click", "b/touch", "system/click" }));
+        var indexBoth = both(new[] { "system/click", "system/touch", "a/click", "a/touch", "b/click", "b/touch", "squeeze/value",
+                                     "squeeze/force", "trigger/click", "trigger/value", "trigger/touch", "trackpad", "trackpad/x",
+                                     "trackpad/y", "trackpad/force", "trackpad/touch" }, stick("thumbstick"));
+        var viveBoth = new[] { "system/click", "squeeze/click", "menu/click", "trigger/click", "trigger/value", "trackpad",
+                               "trackpad/x", "trackpad/y", "trackpad/click", "trackpad/touch" };
+        var wmrBoth = both(new[] { "menu/click", "squeeze/click", "trigger/value", "trackpad", "trackpad/x", "trackpad/y",
+                                   "trackpad/click", "trackpad/touch" }, stick("thumbstick").Where(i => i != "thumbstick/touch").ToArray());
+        var g2Both = both(new[] { "menu/click", "squeeze/value", "trigger/value" }, stick("thumbstick").Where(i => i != "thumbstick/touch").ToArray());
+        var simpleBoth = new[] { "select/click", "menu/click" };
+        return new Dictionary<string, (string[], string[])>
+        {
+            ["/interaction_profiles/oculus/touch_controller"] = touch,
+            ["/interaction_profiles/meta/touch_controller_plus"] = touch,
+            ["/interaction_profiles/facebook/touch_controller_pro"] = touch,
+            ["/interaction_profiles/hp/mixed_reality_controller"] = (both(g2Both, new[] { "x/click", "y/click" }), both(g2Both, new[] { "a/click", "b/click" })),
+            ["/interaction_profiles/valve/index_controller"] = (indexBoth, indexBoth),
+            ["/interaction_profiles/htc/vive_controller"] = (viveBoth, viveBoth),
+            ["/interaction_profiles/microsoft/motion_controller"] = (wmrBoth, wmrBoth),
+            ["/interaction_profiles/khr/simple_controller"] = (simpleBoth, simpleBoth),
+        };
+    }
+
+    // VHVR's OpenXR actions (OpenXRInputBackend.BuildManifest): valid, unique names within the runtime's limits, one
+    // per boolean and vector2 catalog action, and suggested bindings only on actions of the catalog and on inputs the
+    // profile has, of the action's type.
+    static void CheckOpenXRManifest()
+    {
+        const BindingFlags all = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        var backend = new OpenXRInputBackend();
+        backend.Declare(VRInputActions.Sets, VRInputActions.Actions);
+        object manifest = typeof(OpenXRInputBackend).GetMethod("BuildManifest", all)!.Invoke(backend, null)!;
+        IEnumerable<object> List(string name) => ((System.Collections.IEnumerable)manifest.GetType().GetField(name, all)!.GetValue(manifest)!).Cast<object>();
+        T Field<T>(object item, string name) => (T)item.GetType().GetField(name, all)!.GetValue(item)!;
+        var valid = new System.Text.RegularExpressions.Regex("^[a-z0-9_.-]+$");
+
+        var sets = List("Sets").ToList();
+        Require(sets.Count == VRInputActions.Sets.Count, "an OpenXR action set per catalog set");
+        foreach (var set in sets)
+        {
+            string name = Field<string>(set, "Name");
+            Require(valid.IsMatch(name) && name.Length < 64, "OpenXR set name " + name);
+            Require(System.Text.Encoding.UTF8.GetByteCount(Field<string>(set, "LocalizedName")) < 128, "OpenXR set localized name " + name);
+        }
+        Require(sets.Select(set => Field<string>(set, "Name")).Distinct().Count() == sets.Count, "unique OpenXR set names");
+
+        var actions = List("Actions").ToList();
+        int expected = VRInputActions.Actions.Count(a => a.Kind == VRActionKind.Boolean || a.Kind == VRActionKind.Vector2);
+        Require(actions.Count == expected, "an OpenXR action per boolean and vector2 catalog action");
+        foreach (var action in actions)
+        {
+            string name = Field<string>(action, "Name");
+            int set = Field<int>(action, "Set");
+            Require(valid.IsMatch(name) && name.Length < 64 && set >= 0 && set < sets.Count, "OpenXR action name " + name);
+            Require(System.Text.Encoding.UTF8.GetByteCount(Field<string>(action, "LocalizedName")) < 128, "OpenXR action localized name " + name);
+        }
+        Require(actions.Select(a => Field<int>(a, "Set") + "/" + Field<string>(a, "Name")).Distinct().Count() == actions.Count, "unique OpenXR action names in each set");
+
+        var profiles = (System.Collections.IEnumerable)typeof(OpenXRInputBackend).Assembly
+            .GetType("ValheimVRMod.VRCore.Backends.OpenXRProfiles", true)!.GetField("All")!.GetValue(null)!;
+        var catalog = VRInputActions.Actions.ToDictionary(a => a.Path);
+        int suggested = 0;
+        foreach (var profile in profiles)
+        {
+            string path = Field<string>(profile, "InteractionProfile");
+            Require(OpenXRInputs.ContainsKey(path), "known interaction profile " + path);
+            foreach (var binding in (System.Collections.IEnumerable)Field<object>(profile, "Suggested"))
+            {
+                string action = Field<string>(binding, "Action");
+                string input = Field<string>(binding, "Input");
+                bool left = Field<object>(binding, "Hand").ToString() == "Left";
+                Require(catalog.TryGetValue(action, out var decl) && (decl.Kind == VRActionKind.Boolean || decl.Kind == VRActionKind.Vector2),
+                        "suggested binding on a catalog action: " + path + " " + action);
+                string[] inputs = left ? OpenXRInputs[path].Left : OpenXRInputs[path].Right;
+                Require(inputs.Contains(input), "input of the profile: " + path + " " + (left ? "left " : "right ") + input);
+                // A vector2 action binds to a 2D input; a boolean one to a click, touch, value or force.
+                bool twoD = !input.Contains('/');
+                Require(twoD == (decl!.Kind == VRActionKind.Vector2), "input type of " + action + ": " + path + " " + input);
+                suggested++;
+            }
+        }
+        Require(List("Bindings").Count() == suggested, "every suggested binding in the manifest");
     }
 
     // VRRuntime picks the backend, and OpenXR turns the overlay GUI off whatever its setting. Runs last: it leaves
