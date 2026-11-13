@@ -352,6 +352,7 @@ namespace ValheimVRMod.VRCore.UI
             }
 
             inputUiModule.enabled = true;
+            excludeXRDevices(inputUiModule);
 
             if (!VHVRConfig.UseVrControls())
             {
@@ -367,6 +368,54 @@ namespace ValheimVRMod.VRCore.UI
                 inputUiModule.rightClick = null;
                 inputUiModule.middleClick = null;
             }
+        }
+
+        private static bool uiDevicesChanged = true;
+        private static UnityEngine.InputSystem.InputActionAsset uiDevicesAsset;
+        private static bool uiDeviceListenerAdded;
+
+        // The XR controllers, which the OpenXR plugin puts in the Input System, are left to VHVR's own input. The
+        // vanilla module's UI actions would otherwise also take them as tracked pointers and click with their
+        // triggers wherever their own rays fall rather than at VHVR's laser: on the inventory's drop outside area, say,
+        // so that an item picked up with the laser gets dropped by the same trigger pull. The module's actions are
+        // limited to the other devices, and the list is made again whenever a device comes or goes. Without XR devices
+        // in the Input System (SteamVR), the module keeps every device, as before.
+        private static void excludeXRDevices(InputSystemUIInputModule inputUiModule)
+        {
+            UnityEngine.InputSystem.InputActionAsset asset = inputUiModule.actionsAsset;
+            if (asset == null)
+            {
+                return;
+            }
+            if (!uiDeviceListenerAdded)
+            {
+                uiDeviceListenerAdded = true;
+                UnityEngine.InputSystem.InputSystem.onDeviceChange += (device, change) => uiDevicesChanged = true;
+            }
+            if (!uiDevicesChanged && asset == uiDevicesAsset)
+            {
+                return;
+            }
+            uiDevicesChanged = false;
+            uiDevicesAsset = asset;
+            var devices = new List<UnityEngine.InputSystem.InputDevice>();
+            bool hasXR = false;
+            foreach (UnityEngine.InputSystem.InputDevice device in UnityEngine.InputSystem.InputSystem.devices)
+            {
+                if (device is UnityEngine.InputSystem.XR.XRController || device is UnityEngine.InputSystem.XR.XRHMD)
+                {
+                    hasXR = true;
+                    continue;
+                }
+                devices.Add(device);
+            }
+            if (hasXR)
+            {
+                LogInfo("XR devices excluded from the vanilla UI input module; it keeps " + devices.Count + " other devices.");
+            }
+            asset.devices = hasXR ?
+                new UnityEngine.InputSystem.Utilities.ReadOnlyArray<UnityEngine.InputSystem.InputDevice>(devices.ToArray()) :
+                (UnityEngine.InputSystem.Utilities.ReadOnlyArray<UnityEngine.InputSystem.InputDevice>?)null;
         }
 
         public void LateUpdate()
