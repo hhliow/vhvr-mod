@@ -232,6 +232,10 @@ namespace ValheimVRMod.VRCore
         public static VRHand arrowHand { get { return VHVRConfig.LeftHanded() ^ offHandWield ? leftHand : rightHand; } }
         public static VRHand bowHand { get { return VHVRConfig.LeftHanded() ^ offHandWield ? rightHand : leftHand; } }
         public static bool ShouldPauseMovement { get { return BarberMirror.IsUsingStation() || (Menu.IsVisible() && !VHVRConfig.AllowMovementWhenInMenu()); } }
+        // While the hands are frozen in place (movement paused or the game paused by the menu), the hand-driven quick
+        // menus are off too: they would still follow the real hands, away from the frozen ones, and get in the way of
+        // pointing at the menu. HandGesture leaves the fingers alone in the same case.
+        public static bool AreQuickMenusPaused { get { return ShouldPauseMovement || Game.IsPaused(); } }
         public static bool IsClickableGuiOpen
         {
             get

@@ -133,6 +133,11 @@ namespace ValheimVRMod.Patches
                 {
                     return;
                 }
+                // Nor while the left hand is busy otherwise, see VRControls.IsHandBusyForInteraction.
+                if (VRControls.IsHandBusyForInteraction(isRightHand: false, leftHover))
+                {
+                    return;
+                }
                 if (!VRInputActions.valheim_Use.GetStateDown(VRInputSource.LeftHand))
                 {
                     if (VRInputActions.valheim_Use.GetState(VRInputSource.LeftHand) && leftHover)

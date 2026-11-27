@@ -31,7 +31,7 @@ namespace ValheimVRMod.Scripts {
             }
             wrist.transform.localPosition = VHVRConfig.RightWristQuickBarPos();
             wrist.transform.localRotation = VHVRConfig.RightWristQuickBarRot();
-            wrist.SetActive(isInView() || IsInArea());
+            wrist.SetActive(!VRPlayer.AreQuickMenusPaused && (isInView() || IsInArea()));
         }
 
         public override void refreshItems() {

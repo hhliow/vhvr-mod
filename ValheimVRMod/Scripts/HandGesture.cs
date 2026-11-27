@@ -27,6 +27,11 @@ namespace ValheimVRMod.Scripts {
         // Fits the joints of sources in VRHandJointFrame.Anatomical to this hand, made when first needed.
         private AnatomicalFingerPoser anatomicalPoser;
 
+        // The finger bones, found when the fingers are first posed, and their pose as of the last time they were.
+        private Transform[] fingerBones;
+        private Quaternion[] frozenFingerRotations;
+        private bool hasFrozenPose;
+
         private bool isRightHand;
         private bool isMainHand { get { return isRightHand ^ !VRPlayer.isRightHandMainWeaponHand; } }
         private Quaternion handFixedRotation;
@@ -48,6 +53,12 @@ namespace ValheimVRMod.Scripts {
         }
 
         public bool isHandFree() {
+            return IsHandFree(isRightHand);
+        }
+
+        // Whether the given hand of the local player is used as a fist: bare, or wearing claws.
+        public static bool IsHandFree(bool isRightHand) {
+            bool isMainHand = isRightHand ^ !VRPlayer.isRightHandMainWeaponHand;
             if (LocalWeaponWield.isCurrentlyTwoHanded())
             {
                 return false;
@@ -112,23 +123,65 @@ namespace ValheimVRMod.Scripts {
 
             // The barber mirror keeps the hands moving while movement is paused, see BarberMirror.
             bool mirrored = BarberMirror.IsActive;
-            if (!areFingersFree() || Game.IsPaused() || (VRPlayer.ShouldPauseMovement && !mirrored)) {
+            if (!areFingersFree()) {
+                // The fingers are posed for what the hand holds, a pose to keep through a pause no more.
+                hasFrozenPose = false;
+                return;
+            }
+            if (Game.IsPaused() || (VRPlayer.ShouldPauseMovement && !mirrored)) {
+                // Like the rest of the paused VRIK, the fingers stay as they were rather than going back to the
+                // animation's pose.
+                if (hasFrozenPose)
+                {
+                    for (int i = 0; i < fingerBones.Length; i++)
+                    {
+                        fingerBones[i].localRotation = frozenFingerRotations[i];
+                    }
+                }
                 return;
             }
 
             transform.rotation = handFixedRotation ;
-            updateFingerRotations(mirrored);
+            hasFrozenPose = updateFingerRotations(mirrored);
+            if (hasFrozenPose)
+            {
+                recordFingerPose();
+            }
+        }
+
+        // Keeps the local rotations of all the finger bones, for the fingers to stay as they are while paused.
+        private void recordFingerPose()
+        {
+            if (fingerBones == null)
+            {
+                var bones = new System.Collections.Generic.List<Transform>();
+                for (int i = 0; i < transform.childCount; i++)
+                {
+                    var child = transform.GetChild(i);
+                    if (fingerOf(child.name) >= 0)
+                    {
+                        bones.AddRange(child.GetComponentsInChildren<Transform>(true));
+                    }
+                }
+                fingerBones = bones.ToArray();
+                frozenFingerRotations = new Quaternion[fingerBones.Length];
+            }
+            for (int i = 0; i < fingerBones.Length; i++)
+            {
+                frozenFingerRotations[i] = fingerBones[i].localRotation;
+            }
         }
 
         // Poses the fingers from the backend's hand joints (see VRHand.TryGetHandJoints): each finger bone takes the
         // rotation of its joint, down the finger for as long as both go. When mirrored, the fingers follow those of the
         // user's opposite hand reflected in the barber mirror, like the hand itself does.
-        private void updateFingerRotations(bool mirrored)
+        // Returns whether the fingers were posed, i. e. the backend had hand joints.
+        private bool updateFingerRotations(bool mirrored)
         {
             VRHand source = mirrored ? sourceHand?.otherHand : sourceHand;
             if (source == null || !source.TryGetHandJoints(out Quaternion[] joints, out bool[] valid))
             {
-                return;
+                return false;
             }
             if (source.handJointFrame == VRHandJointFrame.Anatomical)
             {
@@ -137,7 +190,7 @@ namespace ValheimVRMod.Scripts {
                     anatomicalPoser = new AnatomicalFingerPoser(transform, isRightHand);
                 }
                 anatomicalPoser.Pose(joints, valid, mirrored, source.handJointsFromController);
-                return;
+                return true;
             }
 
             for (int i = 0; i < transform.childCount; i++) {
@@ -159,6 +212,7 @@ namespace ValheimVRMod.Scripts {
                     bone = bone.GetChild(0);
                 }
             }
+            return true;
         }
 
         // A joint rotation of the user's opposite hand as its reflection in the barber mirror, a hand of this side.

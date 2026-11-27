@@ -378,6 +378,14 @@ namespace ValheimVRMod.VRCore.UI
                 return;
             }
 
+            if (VRPlayer.AreQuickMenusPaused)
+            {
+                // Closed without selecting anything, and the button has to be pressed anew once unpaused.
+                holdTime = 0;
+                obj.SetActive(false);
+                return;
+            }
+
             if (!action.GetState(VRInputSource.Any))
             {
                 holdTime = 0;
@@ -497,6 +505,7 @@ namespace ValheimVRMod.VRCore.UI
             {
                 return !LaserPointerChords.IsLaserActiveFor(VRInputSource.RightHand) &&
                     !LocalWeaponWield.isAiming &&
+                    !IsHandBusyForInteraction(isRightHand: true, Player.m_localPlayer?.GetHoverObject()) &&
                     VRInputActions.valheim_Use.GetStateDown(VRInputSource.RightHand);
             }
             if (zinput == "Map") {
@@ -561,6 +570,7 @@ namespace ValheimVRMod.VRCore.UI
             {
                 return !LaserPointerChords.IsLaserActiveFor(VRInputSource.RightHand) &&
                     !LocalWeaponWield.isAiming &&
+                    !IsHandBusyForInteraction(isRightHand: true, Player.m_localPlayer?.GetHoverObject()) &&
                     VRInputActions.valheim_Use.GetState(VRInputSource.RightHand);
             }
             if (zinput == "JoyAltPlace")
@@ -587,6 +597,30 @@ namespace ValheimVRMod.VRCore.UI
                 return false;
             }
             return action.Any(x => x.GetState(VRInputSource.Any));
+        }
+
+        // Whether the trigger of the given hand serves something else than interacting with what it points at:
+        // - a hand holding a magic weapon casts with it;
+        // - a bare hand or claws with the grip held punches, hitting even non-enemies (see FistCollision). Only
+        //   naming a portal and editing a sign are kept from it, since this is how a fist renames a pet (grip being
+        //   the alt modifier, see CheckAltButton) and the left hand never sends the alt modifier anyway.
+        public static bool IsHandBusyForInteraction(bool isRightHand, GameObject hover)
+        {
+            if (Player.m_localPlayer == null)
+            {
+                return false;
+            }
+            if (HandGesture.IsHandFree(isRightHand))
+            {
+                return hover != null &&
+                    VRInputActions.valheim_Grab.GetState(isRightHand ? VRInputSource.RightHand : VRInputSource.LeftHand) &&
+                    (hover.GetComponentInParent<TeleportWorld>() != null || hover.GetComponentInParent<Sign>() != null);
+            }
+            if (EquipScript.CurrentMainHandEquipType() != EquipType.Magic)
+            {
+                return false;
+            }
+            return isRightHand == VRPlayer.isRightHandMainWeaponHand || LocalWeaponWield.isCurrentlyTwoHanded();
         }
 
         private bool CheckAltButton()
